@@ -6,7 +6,7 @@ import { createRng } from './rng'
 import { Session, WeekPlanner, personalPrior } from './session'
 import { sampleProfile } from './sample'
 import { allocateSpendBonus, buildTimeValueTable, defaultLimits, expectedUtility, timeAlloc, TIME_STEP } from './week'
-import { SPEND_SCALES } from './model'
+import { SPEND_MU_MIN, SPEND_SCALES } from './model'
 import { LifeSimulator, presetPolicies } from './lifeplan'
 import { generateCandidates } from './questions'
 import { questionContext, currentLife } from './household'
@@ -112,14 +112,18 @@ describe('1週間の最適化', () => {
     }
   })
 
-  it('支出の配分は合計が一致し、使っているカテゴリの限界効用がそろう', () => {
-    const alphas: [number, number, number] = [0.06, 0.015, 0.1]
-    for (const D of [20_000, 80_000, 200_000]) {
+  it('支出の配分は合計が D 以下で、使っているカテゴリの限界効用がそろう（余りは限界が下限に達したときだけ）', () => {
+    const alphas: [number, number, number] = [0.035, 0.005, 0.012]
+    for (const D of [5_000, 30_000, 80_000, 400_000]) {
       const xs = allocateSpendBonus(alphas, D)
-      expect(xs[0] + xs[1] + xs[2]).toBeCloseTo(D, 3)
+      const sum = xs[0] + xs[1] + xs[2]
+      expect(sum).toBeLessThanOrEqual(D + 1e-6)
       const mus = xs.map((x, k) => (alphas[k] / SPEND_SCALES[k]) * Math.exp(-x / SPEND_SCALES[k]))
       const used = mus.filter((_, k) => xs[k] > 1)
       for (const m of used) expect(Math.abs(m - used[0]) / used[0]).toBeLessThan(1e-3)
+      // 使い切っていないなら、限界効用は下限ちょうど
+      if (sum < D - 1) for (const m of used) expect(m).toBeCloseTo(SPEND_MU_MIN, 12)
+      else expect(sum).toBeCloseTo(D, 3)
     }
   })
 

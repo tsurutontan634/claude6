@@ -102,9 +102,13 @@ export const PRIORS = {
     commuteSources: ['stutzer-frey', 'clark-commute'],
   },
   spend: {
-    experience: { max: 0.06, sd: 0.6, scale: 40_000 },
-    goods: { max: 0.015, sd: 0.7, scale: 30_000 },
-    social: { max: 0.1, sd: 0.7, scale: 8_000 },
+    // 「同じ金額のふつうの消費」に比べた最初の1円の倍率で校正（基準の限界効用 β/C₀ ≈ 2.3e-6 点/円）：
+    //   体験 約1.25倍で月6万円規模で飽和、モノ 約1.05倍、人のため 約1.9倍だが月数千円で急速に飽和
+    experience: { max: 0.035, sd: 0.6, scale: 60_000 },
+    goods: { max: 0.005, sd: 0.7, scale: 40_000 },
+    social: { max: 0.012, sd: 0.7, scale: 6_000 },
+    /** 上乗せの限界効用が「ふつうの消費の限界効用」のこの割合を下回ったら、残りはふつうの消費に回す */
+    minMarginalRatio: 0.15,
     /** 家事代行などで家事1時間を買う価格（円） */
     timeBuyYenPerHour: 3000,
     /** 家事のうち外注・時短できる最大割合 */

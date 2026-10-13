@@ -114,7 +114,7 @@ export function WeekPage() {
           )}
         </div>
         <div className="sheet table-wrap">
-          <table>
+          <table className="wide">
             <caption className="note" style={{ textAlign: 'left', paddingBottom: 6 }}>
               「最適」の幅は、推定の不確かさ（あり得るあなたの好みの範囲）で最適な時間がどれくらい動くか。回答が増えると狭くなります。
             </caption>
@@ -195,7 +195,7 @@ export function WeekPage() {
         </div>
         {jobs && (
           <div className="sheet table-wrap">
-            <table>
+            <table className="wide">
               <thead>
                 <tr>
                   <th>仕事の候補</th>
@@ -252,7 +252,7 @@ function Breakdown({ now, opt }: { now: UtilityBreakdown; opt: UtilityBreakdown 
   ]
   return (
     <div className="sheet table-wrap">
-      <table>
+      <table className="wide">
         <caption className="note" style={{ textAlign: 'left', paddingBottom: 6 }}>
           各項目が満足度に何点ぶん効いているか（その活動が週0時間の状態、消費が基準水準の状態などを0点とした推定）。
         </caption>

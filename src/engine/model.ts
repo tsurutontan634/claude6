@@ -246,6 +246,8 @@ export const SPEND_SCALES: [number, number, number] = [
   PRIORS.spend.social.scale,
 ]
 export const OVERWORK_FROM = PRIORS.work.overworkFrom
+/** 支出の上乗せをこれ以上は求めない限界効用（点/円）。残りは「その他（ふつうの消費）」 */
+export const SPEND_MU_MIN = (PRIORS.spend.minMarginalRatio * PRIORS.money.beta) / PRIORS.money.cRef
 
 /** CRRA型：x=1 で 0、傾き 1 */
 export function crra(x: number, eta: number): number {

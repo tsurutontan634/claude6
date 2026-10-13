@@ -64,7 +64,7 @@ export function AboutPage() {
       <section className="section" aria-labelledby="pr-title">
         <h2 id="pr-title">パラメータ：研究からの出発点と、あなたの推定</h2>
         <div className="sheet table-wrap">
-          <table>
+          <table className="wide">
             <thead>
               <tr>
                 <th>パラメータ</th>

@@ -166,7 +166,7 @@ export function DataPage() {
         <section className="sheet section" aria-labelledby="hist-title">
           <h3 id="hist-title">回答の履歴（新しい順・最大30件）</h3>
           <div className="table-wrap">
-            <table>
+            <table className="wide">
               <thead>
                 <tr>
                   <th className="num">#</th>

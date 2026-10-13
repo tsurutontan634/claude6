@@ -17,6 +17,7 @@ import {
   P_ASOCIAL,
   P_S,
   P_W,
+  SPEND_MU_MIN,
   SPEND_SCALES,
   soloPenalty,
   utility,
@@ -158,9 +159,10 @@ export function meanSpendAlphas(thetas: Float64Array): [number, number, number] 
 }
 
 /**
- * Σ A_k (1 − e^{−x_k/X_k}) を Σ x_k = D の下で最大化（限界効用を揃える水位合わせ）。
+ * Σ A_k (1 − e^{−x_k/X_k}) を Σ x_k ≤ D の下で最大化（限界効用を揃える水位合わせ）。
  * 一階条件 (A_k/X_k)·e^{−x_k/X_k} = μ より x_k = X_k·ln(A_k/(X_k μ))（正のときのみ）。
  * Σ x_k(μ) は μ について単調減少なので、log μ を二分探索する。
+ * ただし μ が SPEND_MU_MIN を下回るほどお金がある場合は、残りを「その他（ふつうの消費）」に回す。
  */
 export function allocateSpendBonus(alphas: [number, number, number], D: number): [number, number, number] {
   if (D <= 0) return [0, 0, 0]
@@ -182,11 +184,12 @@ export function allocateSpendBonus(alphas: [number, number, number], D: number):
     if (xs[0] + xs[1] + xs[2] > D) lo = mid
     else hi = mid
   }
+  const logMin = Math.log(SPEND_MU_MIN)
+  if (hi <= logMin) return xsAt(logMin)
   const xs = xsAt(hi)
   // 端数を合計 D に合わせる
   const sum = xs[0] + xs[1] + xs[2]
   if (sum > 0) for (let k = 0; k < 3; k++) xs[k] *= D / sum
-  else xs[0] = D
   return xs
 }
 

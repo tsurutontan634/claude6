@@ -272,7 +272,7 @@ export function ProfilePage() {
           。育児の時間は子どもの年齢と分担から自動で計算しています（今は週{trimNum(hh.childcareMine)}時間）。
         </p>
         <div className="table-wrap">
-          <table>
+          <table className="wide">
             <thead>
               <tr>
                 <th>活動</th>

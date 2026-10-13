@@ -521,6 +521,9 @@ th {
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
+table.wide {
+  min-width: 620px;
+}
 td.num,
 th.num {
   text-align: right;

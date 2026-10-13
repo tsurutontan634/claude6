@@ -49,6 +49,7 @@ export function MoneyPage() {
   if (!res) return <Loading label="お金と満足度の関係を計算しています…" />
   const { opt, life, householdGross, curve, mu, freeValue, sec, double, half } = res
   const assetsMonths = life.state.assetsMonths
+  const discretionary = Math.max(0, life.consumption - life.necessities)
   const secNow = sec.reduce((a, b) => (Math.abs(b.x - Math.min(24, assetsMonths)) < Math.abs(a.x - Math.min(24, assetsMonths)) ? b : a))
 
   return (
@@ -127,13 +128,22 @@ export function MoneyPage() {
             aLabel="今"
             bLabel="おすすめ"
             format={(v) => manYen(v)}
-            rows={SPEND_KEYS.map((key) => ({
-              key,
-              label: SPENDS[key].label,
-              color: SPEND_COLOR[key],
-              a: life.state.spend[key],
-              b: opt.outcome.spend[key],
-            }))}
+            rows={[
+              ...SPEND_KEYS.map((key) => ({
+                key,
+                label: SPENDS[key].label,
+                color: SPEND_COLOR[key],
+                a: life.state.spend[key],
+                b: opt.outcome.spend[key],
+              })),
+              {
+                key: 'other',
+                label: 'その他',
+                color: 'var(--s-chores)',
+                a: Math.max(0, discretionary - SPEND_KEYS.reduce((t, k) => t + life.state.spend[k], 0)),
+                b: Math.max(0, discretionary - SPEND_KEYS.reduce((t, k) => t + opt.outcome.spend[k], 0)),
+              },
+            ]}
           />
           <ul style={{ margin: 0, paddingLeft: '1.2em' }} className="note">
             {SPEND_KEYS.map((key) => (
@@ -141,9 +151,10 @@ export function MoneyPage() {
                 {SPENDS[key].label}：{SPENDS[key].example}
               </li>
             ))}
+            <li>その他：ふだんの買い物や外食など、特に分けずに使うお金（上乗せ効果はないが、消費としての満足はある）</li>
           </ul>
           <p className="note">
-            体験・人のための支出は「同じ金額のふつうの消費」より満足を生みやすいという研究に基づく上乗せを、あなたの回答で調整しています。「時間を買う」は家事代行1時間 {yen(3000)} として、浮いた時間の価値と比べて決めています。おすすめの使い方での上乗せ効果は合計 {deltaText(opt.outcome.spendUtility)} の推定です。
+            体験・人のための支出は「同じ金額のふつうの消費」より満足を生みやすいという研究に基づく上乗せを、あなたの回答で調整しています。上乗せは少額ほど大きく、ある程度を超えると「その他（ふつうの消費）」と変わらなくなるので、そこから先はどう使っても同じとみなしています。「時間を買う」は家事代行1時間 {yen(3000)} として、浮いた時間の価値と比べて決めています。おすすめの使い方での上乗せ効果は合計 {deltaText(opt.outcome.spendUtility)} の推定です。
           </p>
         </div>
       </section>

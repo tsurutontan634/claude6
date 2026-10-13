@@ -127,6 +127,11 @@ export function QuestionPage() {
                 </button>
               ))}
             </div>
+            {n >= 40 && cur.eig > 0 && cur.eig < 0.03 && (
+              <p className="note">
+                ここから先の質問で新しく分かることは少なくなってきました。結果がほぼ固まっているので、いったん「最適な1週間」を見てみるのがおすすめです（続けて答えるとさらに細かく調整されます）。
+              </p>
+            )}
             {MONEY_TEMPLATES.has(cur.q.template) && (
               <p className="note">比べる形式だと、お金の差は実際に暮らしたときより大きく感じやすいことが知られています。金額だけでなく、その暮らしを思い浮かべて選んでください。</p>
             )}

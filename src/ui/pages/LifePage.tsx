@@ -140,7 +140,7 @@ export function LifePage() {
           />
         </div>
         <div className="sheet table-wrap">
-          <table>
+          <table className="wide">
             <thead>
               <tr>
                 <th>プラン</th>
@@ -208,7 +208,7 @@ export function LifePage() {
           <span className="note">表の行が多いので5年ごとに表示</span>
         </div>
         <div className="sheet table-wrap">
-          <table>
+          <table className="wide">
             <thead>
               <tr>
                 <th className="num">年齢</th>
