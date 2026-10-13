@@ -75,10 +75,10 @@ export const CHILD = {
  *   mixed   … 高校まで公立、私立大学（文系）
  *   private … 小学校から私立、私立大学（理系）
  */
-export function educationCostAnnual(childAge: number, schooling: ChildPlan['schooling']): number {
+export function educationCostAnnual(childAge: number, schooling: ChildPlan['schooling'], daycare = true): number {
   if (childAge < 0) return 0
   const priv = schooling === 'private'
-  if (childAge < 3) return 300_000
+  if (childAge < 3) return daycare ? 300_000 : 0 // 保育所を使わなければ保育料はかからない
   if (childAge < 6) return priv ? 347_000 : 185_000 // 幼稚園
   if (childAge < 12) return priv ? 1_828_000 : 336_000 // 小学校
   if (childAge < 15) return priv ? 1_560_000 : 542_000 // 中学校

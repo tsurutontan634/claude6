@@ -1,8 +1,8 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
+import { Component, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { Profile, Question, Response } from '../engine/types'
 import { Session } from '../engine/session'
 import type { LifeAssumptions, LifePolicy } from '../engine/lifeplan'
-import { freshSaved, loadPosterior, loadSaved, persist, savePosterior, signature, type Saved } from './store'
+import { exportJSON, freshSaved, loadPosterior, loadSaved, persist, savePosterior, signature, type Saved } from './store'
 import { HomePage } from './pages/Home'
 import { ProfilePage } from './pages/ProfilePage'
 import { QuestionPage } from './pages/QuestionPage'
@@ -30,6 +30,11 @@ interface AppState {
   session: Session
   /** 事後分布が変わるたびに増える番号（結果の再計算の合図） */
   rev: number
+  /** 推定の作り直しなどで操作を受け付けない間 true */
+  busy: boolean
+  /** プロフィール画面の、まだ保存していない編集 */
+  draft: Profile | null
+  setDraft: (p: Profile | null) => void
   go: (t: Tab) => void
   answer: (q: Question, r: Response) => void
   undo: () => Promise<void>
@@ -65,14 +70,16 @@ export function App() {
   const session = sessionRef.current
   const [rev, setRev] = useState(0)
   const [tab, setTab] = useState<Tab>(initialTab)
-  const [busy, setBusy] = useState<{ label: string; frac: number } | null>(null)
+  const [busy, setBusyState] = useState<{ label: string; frac: number } | null>(null)
+  const busyRef = useRef(false)
+  const [draft, setDraft] = useState<Profile | null>(null)
   const [toastMsg, setToastMsg] = useState<string | null>(null)
   const savedRef = useRef(saved)
   savedRef.current = saved
 
   const toast = useCallback((msg: string) => {
     setToastMsg(msg)
-    window.setTimeout(() => setToastMsg((m) => (m === msg ? null : m)), 2600)
+    window.setTimeout(() => setToastMsg((m) => (m === msg ? null : m)), 2800)
   }, [])
 
   const commit = useCallback((next: Saved, cachePosterior = true) => {
@@ -80,6 +87,25 @@ export function App() {
     persist(next)
     if (cachePosterior) savePosterior(signature(next), sessionRef.current!.posterior.serialize())
   }, [])
+
+  /** 時間のかかる処理を、操作を止めた状態で実行する（失敗しても必ず元に戻す） */
+  const runBusy = useCallback(
+    async (label: string, fn: (progress: (f: number) => void) => Promise<void>) => {
+      if (busyRef.current) return
+      busyRef.current = true
+      setBusyState({ label, frac: 0 })
+      try {
+        await fn((f) => setBusyState((b) => (b ? { ...b, frac: f } : b)))
+      } catch (e) {
+        console.error(e)
+        toast('処理に失敗しました。データ管理から書き出してやり直してください')
+      } finally {
+        busyRef.current = false
+        setBusyState(null)
+      }
+    },
+    [toast],
+  )
 
   // 起動時：保存してある回答から事後分布を復元する
   useEffect(() => {
@@ -90,14 +116,11 @@ export function App() {
       setRev((r) => r + 1)
       return
     }
-    setBusy({ label: `これまでの回答（${s.answers.length}問）から推定を復元しています`, frac: 0 })
-    session
-      .loadAnswersAsync(s.answers, (f) => setBusy((b) => (b ? { ...b, frac: f } : b)))
-      .then(() => {
-        setBusy(null)
-        setRev((r) => r + 1)
-        savePosterior(signature(s), session.posterior.serialize())
-      })
+    void runBusy(`これまでの回答（${s.answers.length}問）から推定を復元しています`, async (progress) => {
+      await session.loadAnswersAsync(s.answers, progress)
+      setRev((r) => r + 1)
+      savePosterior(signature(s), session.posterior.serialize())
+    })
     // 起動時に一度だけ
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -121,35 +144,35 @@ export function App() {
 
   const answer = useCallback(
     (q: Question, r: Response) => {
-      const a = session.answer(q, r)
-      const next = { ...savedRef.current, answers: [...savedRef.current.answers, a] }
-      commit(next)
+      if (busyRef.current) return
+      session.answer(q, r)
+      // 回答の正本はセッション側（画面の状態が古くても取りこぼさない）
+      commit({ ...savedRef.current, answers: session.answers.slice() })
       setRev((x) => x + 1)
     },
     [commit, session],
   )
 
-  const undo = useCallback(async () => {
-    const s = savedRef.current
-    if (s.answers.length === 0) return
-    const answers = s.answers.slice(0, -1)
-    setBusy({ label: '直前の回答を取り消しています', frac: 0 })
-    await session.loadAnswersAsync(answers, (f) => setBusy((b) => (b ? { ...b, frac: f } : b)))
-    setBusy(null)
-    commit({ ...s, answers })
-    setRev((x) => x + 1)
-  }, [commit, session])
+  const undo = useCallback(
+    () =>
+      runBusy('直前の回答を取り消しています', async (progress) => {
+        if (session.answers.length === 0) return
+        await session.undoAsync(progress)
+        commit({ ...savedRef.current, answers: session.answers.slice() })
+        setRev((x) => x + 1)
+      }),
+    [commit, runBusy, session],
+  )
 
   const setProfile = useCallback(
-    async (p: Profile) => {
-      const s = savedRef.current
-      setBusy({ label: 'プロフィールを反映して推定し直しています', frac: 0 })
-      await session.setProfileAsync(p, (f) => setBusy((b) => (b ? { ...b, frac: f } : b)))
-      setBusy(null)
-      commit({ ...s, profile: p, isSample: false })
-      setRev((x) => x + 1)
-    },
-    [commit, session],
+    (p: Profile) =>
+      runBusy('プロフィールを反映して推定し直しています', async (progress) => {
+        await session.setProfileAsync(p, progress)
+        commit({ ...savedRef.current, profile: p, isSample: false })
+        setDraft(null)
+        setRev((x) => x + 1)
+      }),
+    [commit, runBusy, session],
   )
 
   const setAssumptions = useCallback(
@@ -167,26 +190,41 @@ export function App() {
   )
 
   const replaceAll = useCallback(
-    async (s: Saved) => {
-      session.profile = s.profile
-      setBusy({ label: 'データを読み込んで推定しています', frac: 0 })
-      await session.loadAnswersAsync(s.answers, (f) => setBusy((b) => (b ? { ...b, frac: f } : b)))
-      setBusy(null)
-      commit(s)
-      setRev((x) => x + 1)
-    },
-    [commit, session],
+    (s: Saved) =>
+      runBusy('データを読み込んで推定しています', async (progress) => {
+        session.profile = s.profile
+        await session.loadAnswersAsync(s.answers, progress)
+        commit(s)
+        setDraft(null)
+        setRev((x) => x + 1)
+      }),
+    [commit, runBusy, session],
   )
 
   const value = useMemo<AppState>(
-    () => ({ saved, session, rev, go, answer, undo, setProfile, setAssumptions, setCustomPolicy, replaceAll, toast }),
-    [saved, session, rev, go, answer, undo, setProfile, setAssumptions, setCustomPolicy, replaceAll, toast],
+    () => ({
+      saved,
+      session,
+      rev,
+      busy: busy !== null,
+      draft,
+      setDraft,
+      go,
+      answer,
+      undo,
+      setProfile,
+      setAssumptions,
+      setCustomPolicy,
+      replaceAll,
+      toast,
+    }),
+    [saved, session, rev, busy, draft, go, answer, undo, setProfile, setAssumptions, setCustomPolicy, replaceAll, toast],
   )
 
   return (
     <Ctx.Provider value={value}>
       <div className="app">
-        <div className="shell">
+        <div className="shell" inert={busy !== null ? true : undefined}>
           <header className="masthead">
             <div className="name">
               <h1>しあわせ配分帳</h1>
@@ -202,18 +240,21 @@ export function App() {
               <button key={t.id} type="button" aria-current={tab === t.id ? 'page' : undefined} onClick={() => go(t.id)}>
                 <span>{t.label}</span>
                 {t.id === 'question' && <span className="count">{saved.answers.length}</span>}
+                {t.id === 'profile' && draft && <span className="count">未保存</span>}
               </button>
             ))}
           </nav>
           <main className="main">
-            {tab === 'home' && <HomePage />}
-            {tab === 'profile' && <ProfilePage />}
-            {tab === 'question' && <QuestionPage />}
-            {tab === 'week' && <WeekPage />}
-            {tab === 'money' && <MoneyPage />}
-            {tab === 'life' && <LifePage />}
-            {tab === 'about' && <AboutPage />}
-            {tab === 'data' && <DataPage />}
+            <ErrorBoundary key={tab} saved={saved}>
+              {tab === 'home' && <HomePage />}
+              {tab === 'profile' && <ProfilePage />}
+              {tab === 'question' && <QuestionPage />}
+              {tab === 'week' && <WeekPage />}
+              {tab === 'money' && <MoneyPage />}
+              {tab === 'life' && <LifePage />}
+              {tab === 'about' && <AboutPage />}
+              {tab === 'data' && <DataPage />}
+            </ErrorBoundary>
           </main>
           <footer className="footer">
             参考・エンターテインメント用の試算です。研究データの平均像とあなたの回答から計算した推定で、医療・金融・キャリアの専門的な助言の代わりにはなりません。回答はこの端末のブラウザ内にだけ保存されます。
@@ -237,4 +278,33 @@ export function App() {
       </div>
     </Ctx.Provider>
   )
+}
+
+/** 画面の描画で想定外のエラーが起きたとき、データを書き出せるようにする */
+class ErrorBoundary extends Component<{ saved: Saved; children: ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+
+  componentDidCatch(error: Error) {
+    console.error(error)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+    return (
+      <div className="sheet section">
+        <h2>表示中にエラーが起きました</h2>
+        <p className="note">入力した値の組み合わせで計算できなかった可能性があります。下のデータを保管してから、プロフィールを見直すか「データ管理」でやり直してください。</p>
+        <textarea readOnly rows={6} value={exportJSON(this.props.saved)} onFocus={(e) => e.currentTarget.select()} />
+        <div className="row">
+          <button type="button" className="btn" onClick={() => this.setState({ error: null })}>
+            もう一度表示する
+          </button>
+        </div>
+      </div>
+    )
+  }
 }

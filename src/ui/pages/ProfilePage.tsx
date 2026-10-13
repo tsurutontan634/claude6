@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useApp } from '../App'
 import type { ActivityKey, ChildPlan, JobOption, Profile } from '../../engine/types'
 import { ACTIVITY_KEYS } from '../../engine/types'
@@ -7,7 +7,7 @@ import { SPEND_KEYS } from '../../engine/types'
 import { commuteAtHours, currentLife, householdAt } from '../../engine/household'
 import { takeHome } from '../../engine/tax'
 import { sampleProfile } from '../../engine/sample'
-import { ACT_COLOR, ACT_DARK_TEXT, NumberField, RangeField, Seg, manYen } from '../common'
+import { ACT_COLOR, NumberField, RangeField, Seg, manYen } from '../common'
 import { WeekBars } from '../charts'
 import { sleepPerNight, trimNum } from '../../engine/format'
 
@@ -20,11 +20,21 @@ const LIKING = [
 ]
 
 export function ProfilePage() {
-  const { saved, setProfile, toast, go } = useApp()
-  const [d, setD] = useState<Profile>(saved.profile)
-  useEffect(() => setD(saved.profile), [saved.profile])
-  const dirty = JSON.stringify(d) !== JSON.stringify(saved.profile)
-  const set = (patch: Partial<Profile>) => setD((x) => ({ ...x, ...patch }))
+  const { saved, setProfile, toast, go, draft, setDraft } = useApp()
+  // 未保存の編集はアプリ側で持つ（ほかのページに移っても消えない）
+  const d = draft ?? saved.profile
+  const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(saved.profile)
+  const set = (patch: Partial<Profile>) => setDraft({ ...d, ...patch })
+  /** 年齢を変えたら、年齢より前になってしまう予定（引退・同居・介護）を直す */
+  const setAge = (age: number) => {
+    const a = Math.round(age)
+    set({
+      age: a,
+      retireAge: Math.max(d.retireAge, a + 1),
+      partnerPlanAge: d.partnerPlanAge !== null ? Math.max(d.partnerPlanAge, a + 1) : null,
+      caregiving: d.caregiving ? { ...d.caregiving, startAge: Math.max(d.caregiving.startAge, a) } : null,
+    })
+  }
   const job = d.jobs.find((j) => j.id === d.currentJobId) ?? d.jobs[0]
   const setJob = (id: string, patch: Partial<JobOption>) => set({ jobs: d.jobs.map((j) => (j.id === id ? { ...j, ...patch } : j)) })
 
@@ -43,7 +53,12 @@ export function ProfilePage() {
         <div className="section-head">
           <h2 id="p-title">プロフィール</h2>
           <div className="row">
-            <button type="button" className="btn ghost small" onClick={() => setD(sampleProfile())}>
+            {dirty && (
+              <button type="button" className="btn ghost small" onClick={() => setDraft(null)}>
+                変更を取り消す
+              </button>
+            )}
+            <button type="button" className="btn ghost small" onClick={() => setDraft(sampleProfile())}>
               サンプルの値に戻す
             </button>
             <button type="button" className="btn" onClick={() => void save()} disabled={!dirty}>
@@ -59,7 +74,7 @@ export function ProfilePage() {
       <section className="sheet section" aria-labelledby="p-basic">
         <h3 id="p-basic">基本</h3>
         <div className="form-grid">
-          <NumberField id="p-age" label="年齢" value={d.age} min={18} max={85} unit="歳" onChange={(v) => set({ age: Math.round(Math.min(85, Math.max(18, v))) })} />
+          <NumberField id="p-age" label="年齢" value={d.age} min={18} max={85} integer unit="歳" onChange={setAge} />
           <Seg
             label="性別（生存率と賃金カーブに使用）"
             value={d.sex}
@@ -98,7 +113,7 @@ export function ProfilePage() {
             onChange={(v) => set({ hasPartner: v === 'yes', partnerPlanAge: v === 'plan' ? Math.max(d.age + 1, d.partnerPlanAge ?? d.age + 2) : null })}
           />
           {d.partnerPlanAge !== null && !d.hasPartner && (
-            <NumberField id="p-pplan" label="一緒に暮らし始める年齢（予定）" value={d.partnerPlanAge} unit="歳" onChange={(v) => set({ partnerPlanAge: Math.max(d.age + 1, Math.round(v)) })} />
+            <NumberField id="p-pplan" label="一緒に暮らし始める年齢（予定）" value={d.partnerPlanAge} unit="歳" min={d.age + 1} max={100} integer onChange={(v) => set({ partnerPlanAge: v })} />
           )}
           {(d.hasPartner || d.partnerPlanAge !== null) && (
             <>
@@ -147,15 +162,17 @@ export function ProfilePage() {
           />
           {d.caregiving && (
             <>
-              <NumberField id="p-cg-start" label="介護が始まる年齢" value={d.caregiving.startAge} unit="歳" onChange={(v) => set({ caregiving: { ...d.caregiving!, startAge: Math.round(v) } })} />
-              <NumberField id="p-cg-years" label="期間" value={d.caregiving.years} unit="年" hint="平均は約5年" onChange={(v) => set({ caregiving: { ...d.caregiving!, years: Math.max(0, Math.round(v)) } })} />
+              <NumberField id="p-cg-start" label="介護が始まる年齢" value={d.caregiving.startAge} unit="歳" min={d.age} max={100} integer onChange={(v) => set({ caregiving: { ...d.caregiving!, startAge: v } })} />
+              <NumberField id="p-cg-years" label="期間" value={d.caregiving.years} unit="年" min={0} max={30} integer hint="平均は約5年" onChange={(v) => set({ caregiving: { ...d.caregiving!, years: v } })} />
               <NumberField
                 id="p-cg-hours"
                 label="自分が担う時間"
                 value={d.caregiving.hoursPerWeek}
                 unit="時間/週"
-                hint="軽い介護で週7時間、重い同居介護で週45時間ほど"
-                onChange={(v) => set({ caregiving: { ...d.caregiving!, hoursPerWeek: Math.max(0, v) } })}
+                min={0}
+                max={100}
+                hint="軽い介護で週7時間、重い同居介護で週45時間ほど。今すでに介護しているなら、その時間は自動で1週間から差し引きます"
+                onChange={(v) => set({ caregiving: { ...d.caregiving!, hoursPerWeek: v } })}
               />
             </>
           )}
@@ -165,6 +182,9 @@ export function ProfilePage() {
       <section className="sheet section" aria-labelledby="p-job">
         <h3 id="p-job">仕事</h3>
         <JobFields job={job} onChange={(patch) => setJob(job.id, patch)} idPrefix="cur" />
+        {job.annualIncome > 0 && job.weeklyHours <= 0 && (
+          <p className="callout">労働時間が0なのに年収が入っています。休職中などの場合は、ふだんの労働時間を入れてください（0のままだと、人生計画では働かない前提になります）。</p>
+        )}
         <p className="note">
           手取り（本人）は年{manYen(net, 0)}・月{manYen(net / 12)}の概算（2026年度の社会保険料率、令和7年度改正後の所得税・住民税。扶養控除などは含まない）。通勤は週{trimNum(commuteAtHours(job, job.weeklyHours))}時間。
         </p>
@@ -218,8 +238,30 @@ export function ProfilePage() {
             onChange={(v) => set({ necessities: Math.max(0, v) * 10_000 })}
             hint="家賃・食費・光熱費・通信・保険・日用品など。一人暮らしで約15万円が目安"
           />
-          <NumberField id="p-retire" label="引退したい年齢" value={d.retireAge} unit="歳" onChange={(v) => set({ retireAge: Math.round(Math.max(d.age + 1, v)) })} />
-          <NumberField id="p-pension" label="年金を受け取り始める年齢" value={d.pensionAge} unit="歳" min={60} max={75} onChange={(v) => set({ pensionAge: Math.round(Math.min(75, Math.max(60, v))) })} hint="65歳が標準。遅らせると1か月0.7%増える" />
+          <NumberField id="p-retire" label="引退したい年齢" value={d.retireAge} unit="歳" min={d.age + 1} max={85} integer onChange={(v) => set({ retireAge: v })} />
+          <NumberField id="p-pension" label="年金を受け取り始める年齢" value={d.pensionAge} unit="歳" min={60} max={75} integer onChange={(v) => set({ pensionAge: v })} hint="65歳が標準。遅らせると1か月0.7%増える" />
+          <NumberField
+            id="p-pnow"
+            label="今受け取っている公的年金（額面・年額）"
+            value={Math.round(d.pensionNow / 10_000)}
+            unit="万円"
+            step={10}
+            min={0}
+            max={1000}
+            onChange={(v) => set({ pensionNow: Math.max(0, v) * 10_000 })}
+            hint="受給前なら0（将来の年金は自動で見積もります）"
+          />
+          <NumberField
+            id="p-other"
+            label="仕事以外の収入（手取り・年額）"
+            value={Math.round(d.otherIncome / 10_000)}
+            unit="万円"
+            step={10}
+            min={0}
+            max={100_000}
+            onChange={(v) => set({ otherIncome: Math.max(0, v) * 10_000 })}
+            hint="家賃収入・仕送り・副業など"
+          />
         </div>
         <p className="note">
           世帯の手取りは月{manYen(life.netMonthly)}、そこから貯蓄と教育費を除いた消費は月{manYen(life.consumption)}、自由に使えるお金は月{manYen(life.discretionary)}です。
@@ -254,10 +296,10 @@ export function ProfilePage() {
             {
               who: '今',
               segments: [
-                { key: 'work', label: '仕事', hours: job.weeklyHours, color: 'var(--s-work)' },
-                { key: 'commute', label: '通勤', hours: life.commuteHours, color: 'var(--s-commute)' },
-                { key: 'chores', label: '家事・身の回り・育児', hours: d.housework + d.personalCare + hh.childcareMine + d.otherDuties, color: 'var(--s-chores)' },
-                ...ACTIVITY_KEYS.map((k) => ({ key: k, label: ACTIVITIES[k].short, hours: d.currentHours[k], color: ACT_COLOR[k], darkText: ACT_DARK_TEXT[k] })),
+                { key: 'work', label: '仕事', hours: job.weeklyHours, color: 'var(--s-work)', textColor: 'var(--on-work)' },
+                { key: 'commute', label: '通勤', hours: life.commuteHours, color: 'var(--s-commute)', textColor: 'var(--on-commute)' },
+                { key: 'chores', label: '家事・身の回り・育児', hours: d.housework + d.personalCare + hh.childcareMine + d.otherDuties + life.caregiving, color: 'var(--s-chores)', textColor: 'var(--on-chores)' },
+                ...ACTIVITY_KEYS.map((k) => ({ key: k, label: ACTIVITIES[k].short, hours: d.currentHours[k], color: ACT_COLOR[k], textColor: `var(--on-${k})` })),
               ],
             },
           ]}
@@ -302,7 +344,12 @@ export function ProfilePage() {
                         />
                         <span>時間</span>
                       </div>
-                      {k === 'sleep' && <span className="hint">{sleepPerNight(d.currentHours.sleep)}</span>}
+                      {k === 'sleep' && (
+                        <span className={d.currentHours.sleep < 35 ? 'hint down' : 'hint'}>
+                          {sleepPerNight(d.currentHours.sleep)}
+                          {d.currentHours.sleep < 35 && '（1日5時間未満は健康への影響が大きいとして計算します）'}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td>

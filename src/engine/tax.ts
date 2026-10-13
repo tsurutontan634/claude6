@@ -80,7 +80,8 @@ export function takeHome(gross: number, age: number): TakeHome {
   if (gross <= 0) return { gross: 0, socialInsurance: 0, incomeTax: 0, residentTax: 0, net: 0 }
   const r = JP_RULES
   const healthBase = Math.min(gross, r.healthCap)
-  const pensionBase = Math.min(gross, r.pensionCap)
+  // 厚生年金は70歳まで
+  const pensionBase = age >= 70 ? 0 : Math.min(gross, r.pensionCap)
   const care = age >= 40 && age < 65 ? r.care : 0
   // 年収 106万円未満は社会保険の対象外とみなす（簡略化）
   const si = gross < 1_060_000 ? 0 : healthBase * (r.health + r.childSupport + care) + pensionBase * r.pension + gross * r.employment
@@ -106,14 +107,14 @@ export function pensionTakeHome(pension: number, age: number): number {
 
 /**
  * 公的年金（65歳開始、年額）の概算。
- * @param avgGross 厚生年金加入期間の平均額面年収
+ * @param avgGross 厚生年金加入期間の平均額面年収（各年の上限 pensionCap を適用済みのもの）
  * @param years 厚生年金の加入年数
  * @param basicYears 国民年金の加入年数（最大40年）
  * @param startAge 受給開始年齢（60〜75。65歳より前は月0.4%減、後は月0.7%増）
  */
 export function publicPension(avgGross: number, years: number, basicYears: number, startAge = 65): number {
   const r = JP_RULES
-  const avgMonthly = Math.min(avgGross, r.pensionCap) / 12
+  const avgMonthly = avgGross / 12
   const earnings = avgMonthly * r.pensionMultiplier * years * 12
   const basic = r.basicPensionFull * Math.min(1, Math.max(0, basicYears) / 40)
   const months = (startAge - 65) * 12

@@ -43,6 +43,8 @@ export function sampleProfile(): Profile {
     housework: 7,
     personalCare: 19,
     otherDuties: 0,
+    pensionNow: 0,
+    otherIncome: 0,
     daycare: true,
     caregiving: null,
     spendShare: { experience: 45, goods: 40, social: 10, timeBuy: 5 },

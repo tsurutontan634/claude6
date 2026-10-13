@@ -108,6 +108,10 @@ export interface Profile {
   pensionAge: number
   /** 介護などその他の義務的時間（時間/週） */
   otherDuties: number
+  /** すでに受け取っている公的年金（額面・年額、円）。まだなら 0 */
+  pensionNow: number
+  /** 仕事以外の収入（手取り・年額、円）：家賃収入・仕送り・副業など */
+  otherIncome: number
   /** 共働きなどで保育所・学童を使うか */
   daycare: boolean
   /** 親の介護の見込み（なければ null） */

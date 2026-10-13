@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useApp } from '../App'
 import { paramSummaries } from '../../engine/insights'
+import { C_REF, OVERWORK_FROM } from '../../engine/model'
 import { SOURCES, SOURCE_MAP } from '../../engine/sources'
 import { Meter } from '../common'
 
@@ -26,11 +27,11 @@ export function AboutPage() {
   + β·((C/√n ÷ C₀)^(1−η) − 1)/(1−η)                       … 消費（η=1 なら対数）
   + Σ 使い道 k  A_k·(1 − e^(−x_k/X_k))                     … 体験・モノ・人のための上乗せ
   + 安心_max·(1 − e^(−貯金月数/M))                          … 貯金の安心感
-  + 楽しさ·H − c·max(0, H−45)² + 所属感(H)                  … 仕事そのもの
+  + 楽しさ·H − c·max(0, H−${OVERWORK_FROM})² + 所属感(H)                  … 仕事そのもの
   − 通勤のつらさ·通勤時間 − 家事の負担 − ひとり時間の取りすぎ`}
           </div>
           <p className="note">
-            単位は「0〜10点の人生満足度」。w は最初の1時間の価値、S は頭打ちの目安（その時間で追加1時間の価値が最初の約37%まで下がる）。C は世帯の月の消費（家事代行などの「時間を買う」支出は除く）、n は世帯人数、C₀ は日本の等価消費の中央値（月17.5万円）。
+            単位は「0〜10点の人生満足度」。w は最初の1時間の価値、S は頭打ちの目安（その時間で追加1時間の価値が最初の約37%まで下がる）。C は世帯の月の消費（家事代行などの「時間を買う」支出は除く）、n は世帯人数、C₀ は日本の等価消費の基準（月{(C_REF / 10_000).toFixed(1)}万円、等価可処分所得の中央値から貯蓄を除いた水準）。
           </p>
         </div>
         <div className="grid-2">

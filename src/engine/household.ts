@@ -2,7 +2,7 @@
 
 import type { JobOption, Profile, Spend, WeekState } from './types'
 import { ACTIVITY_KEYS } from './types'
-import { takeHome } from './tax'
+import { pensionTakeHome, takeHome } from './tax'
 import { CHILD, childAllowanceMonthly, educationCostAnnual } from './data'
 import { defaultLimits, type TimeLimits } from './week'
 import type { QuestionContext } from './questions'
@@ -22,8 +22,10 @@ export function currentJob(p: Profile): JobOption {
  */
 export function grossAtHours(job: JobOption, h: number, samePayRate = false): number {
   if (h <= 0) return 0
-  const base = Math.max(1, job.weeklyHours)
-  const partTime = !samePayRate && !job.hoursFlexible && h < Math.min(35, base) ? PRIORS.work.partTimeWageRatio : 1
+  // 労働時間が0なのに年収がある（休職中など）場合は、標準的な週40時間で稼いでいるとみなす
+  const base = job.weeklyHours > 0 ? job.weeklyHours : 40
+  // フルタイムからパートタイムに移る場合だけ時給を下げる（もともと短時間の仕事には二重にかけない）
+  const partTime = !samePayRate && !job.hoursFlexible && base >= 35 && h < 35 ? PRIORS.work.partTimeWageRatio : 1
   if (!job.overtimePaid) {
     // 固定給：所定（最大40時間）より短くすると比例して減り、それ以上は増えない
     const ref = Math.min(base, 40)
@@ -35,7 +37,7 @@ export function grossAtHours(job: JobOption, h: number, samePayRate = false): nu
 
 /** 週の出社日数 */
 export function workDaysAtHours(job: JobOption, h: number): number {
-  if (h <= 0) return 0
+  if (h <= 0 || job.workDays <= 0) return 0
   const perDay = job.weeklyHours / Math.max(1, job.workDays)
   return Math.min(7, Math.max(1, Math.round(h / Math.max(4, perDay))))
 }
@@ -80,8 +82,13 @@ export function householdAt(p: Profile, age: number): HouseholdYear {
     if (ca < 0) return
     if (ca < CHILD.leaveHomeAge) childAges.push(ca)
     demands.push(Math.max(0, CHILD.careHours(ca) - (p.daycare && ca < 6 && ca >= 1 ? CHILD.daycareOffset : 0)))
-    education += educationCostAnnual(ca, c.schooling)
-    allowance += childAllowanceMonthly(ca, idx + 1)
+    education += educationCostAnnual(ca, c.schooling, p.daycare)
+    // 児童手当の「第何子」は、22歳未満の子の中で数える
+    const order = sorted.slice(0, idx + 1).filter((x) => {
+      const xa = age - x.parentAgeAtBirth
+      return xa >= 0 && xa < 22
+    }).length
+    allowance += childAllowanceMonthly(ca, order)
   })
   // いちばん手のかかる子は全量、ほかの子は 0.6 倍
   demands.sort((a, b) => b - a)
@@ -113,11 +120,32 @@ export function necessitiesAt(p: Profile, size: number): number {
   return p.necessities * Math.sqrt(size / size0)
 }
 
-/** 今の世帯の手取り（年額） */
+/** 今の世帯の手取り（年額）：給与（本人・パートナー）＋受給中の年金＋その他の収入 */
 export function householdNetAnnual(p: Profile, ownGross: number, age = p.age): number {
   const own = takeHome(ownGross, age).net
   const partner = partnerAt(p, age) && p.partnerIncome > 0 ? takeHome(p.partnerIncome, age).net : 0
-  return own + partner
+  const pension = p.pensionNow > 0 ? pensionTakeHome(p.pensionNow, age) : 0
+  return own + partner + pension + Math.max(0, p.otherIncome)
+}
+
+/** 介護の時間（時間/週） */
+export function caregivingHours(p: Profile, age: number): number {
+  const c = p.caregiving
+  if (!c) return 0
+  return age >= c.startAge && age < c.startAge + c.years ? c.hoursPerWeek : 0
+}
+
+/** 収入が足りないときの消費の下限（貯金を取り崩して暮らす前提） */
+export function consumptionFloor(necessities: number): number {
+  return Math.max(30_000, necessities * 0.6)
+}
+
+/** 家事代行などで今すでに減らしている家事の時間（時間/週） */
+export function boughtHousework(p: Profile, timeBuyMonthly: number): number {
+  const bought = timeBuyMonthly / WEEKS_PER_MONTH / PRIORS.spend.timeBuyYenPerHour
+  // 外注しているぶんを足し戻した「もとの家事時間」の maxShare までしか外注できない
+  const gross = p.housework + bought
+  return Math.min(bought, gross * PRIORS.spend.timeBuyMaxShare)
 }
 
 /** 活動時間の上限・下限（プロフィールに応じて家族の時間の上限を変える） */
@@ -138,6 +166,12 @@ function normalizedShares(s: Spend): [number, number, number] {
 export interface CurrentLife {
   state: WeekState
   netMonthly: number
+  /** 収入が必需的支出の6割に届かず、貯金を取り崩して暮らしている前提で計算しているか */
+  drawingDown: boolean
+  /** 外注前の家事時間（時間/週） */
+  grossHousework: number
+  /** 今いま介護に使っている時間（時間/週） */
+  caregiving: number
   consumption: number
   discretionary: number
   necessities: number
@@ -157,7 +191,11 @@ export function currentLife(p: Profile): CurrentLife {
   const hh = householdAt(p, p.age)
   const gross = grossAtHours(job, job.weeklyHours)
   const netMonthly = householdNetAnnual(p, gross) / 12 + hh.allowance
-  const consumption = Math.max(1, netMonthly - p.monthlySaving - hh.education / 12)
+  const raw = netMonthly - p.monthlySaving - hh.education / 12
+  const floor = consumptionFloor(p.necessities)
+  const drawingDown = raw < floor
+  // 収入で必需品もまかなえない場合は、貯金を取り崩して必需的支出ぶんは使っているとみなす
+  const consumption = drawingDown ? Math.max(floor, Math.min(p.necessities, p.savings / 12)) : raw
   const discretionary = Math.max(0, consumption - p.necessities)
   const shareTot = p.spendShare.experience + p.spendShare.goods + p.spendShare.social + p.spendShare.timeBuy
   const f = (k: keyof Spend) => (shareTot > 0 ? (discretionary * p.spendShare[k]) / shareTot : 0)
@@ -170,7 +208,8 @@ export function currentLife(p: Profile): CurrentLife {
     p.housework +
     p.personalCare +
     hh.childcareMine +
-    p.otherDuties
+    p.otherDuties +
+    caregivingHours(p, p.age)
   const state: WeekState = {
     hours,
     workHours: job.weeklyHours,
@@ -182,13 +221,17 @@ export function currentLife(p: Profile): CurrentLife {
     jobJoyShift: 0,
     houseworkHours: p.housework,
   }
+  const care = caregivingHours(p, p.age)
   return {
     state,
     netMonthly,
+    drawingDown,
+    grossHousework: p.housework + boughtHousework(p, state.spend.timeBuy),
+    caregiving: care,
     consumption,
     discretionary,
     necessities: p.necessities,
-    freeHours: 168 - job.weeklyHours - commuteHours - p.housework - p.personalCare - hh.childcareMine - p.otherDuties - Math.max(0, 168 - used),
+    freeHours: 168 - job.weeklyHours - commuteHours - p.housework - p.personalCare - hh.childcareMine - p.otherDuties - care - Math.max(0, 168 - used),
     unaccounted: 168 - used,
     unlisted: Math.max(0, 168 - used),
     household: hh,
@@ -210,9 +253,9 @@ export function questionContext(p: Profile): QuestionContext {
     base: life.state,
     // 質問は「仮に時給が同じなら」で聞く
     consumptionAtHours: (h: number) =>
-      Math.max(1, householdNetAnnual(p, grossAtHours(job, h, true)) / 12 + hh.allowance - p.monthlySaving - hh.education / 12),
+      Math.max(consumptionFloor(p.necessities), householdNetAnnual(p, grossAtHours(job, h, true)) / 12 + hh.allowance - p.monthlySaving - hh.education / 12),
     commuteAtHours: (h: number) => commuteAtHours(job, h),
-    commuteDays: workDaysAtHours(job, job.weeklyHours) * (1 - (job.workDays > 0 ? Math.min(1, job.remoteDaysPerWeek / job.workDays) : 0)),
+    commuteDays: job.workDays > 0 ? workDaysAtHours(job, job.weeklyHours) * (1 - Math.min(1, job.remoteDaysPerWeek / job.workDays)) : 0,
     commuteMinutesOneWay: job.commuteMinutesOneWay,
     necessities: p.necessities,
     limits: limitsFor(p),

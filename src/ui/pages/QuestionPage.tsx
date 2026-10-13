@@ -3,10 +3,10 @@ import type { Question, Response } from '../../engine/types'
 import { useApp } from '../App'
 import { ACTIVITIES } from '../../engine/model'
 import { TEMPLATE_LABELS } from '../../engine/questions'
-import { activityValues, personalityType } from '../../engine/insights'
+import { lifeActivityValues, personalityType } from '../../engine/insights'
 import { currentLife } from '../../engine/household'
 import { ACT_COLOR, Loading, Meter } from '../common'
-import { DRAWS_FOR_DESIGN } from '../../engine/session'
+import { DRAWS_FOR_PLAN } from '../../engine/session'
 import { yen } from '../../engine/format'
 
 /** 左から：Aがかなり良い … Bがかなり良い（回答コードは 4 … 0） */
@@ -27,7 +27,7 @@ interface Current {
 }
 
 export function QuestionPage() {
-  const { session, saved, answer, undo, go, toast, rev } = useApp()
+  const { session, saved, answer, undo, go, toast, rev, busy } = useApp()
   const [cur, setCur] = useState<Current | null>(null)
   const [thinking, setThinking] = useState(true)
   const salt = useRef(0)
@@ -49,7 +49,7 @@ export function QuestionPage() {
 
   const respond = useCallback(
     (r: Response) => {
-      if (!cur || thinking) return
+      if (!cur || thinking || busy) return
       setThinking(true)
       window.setTimeout(() => {
         answer(cur.q, r)
@@ -57,18 +57,19 @@ export function QuestionPage() {
         if (m === 10 || m === 30 || m === 60 || m % 50 === 0) toast(`${m}問に答えました。「最適な1週間」で結果が見られます`)
       }, 10)
     },
-    [cur, thinking, answer, n, toast],
+    [cur, thinking, busy, answer, n, toast],
   )
 
   const skip = useCallback(() => {
-    if (!cur) return
+    if (!cur || busy) return
     session.skip(cur.q)
     salt.current += 1
     load()
-  }, [cur, session, load])
+  }, [cur, busy, session, load])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.repeat || e.isComposing || e.ctrlKey || e.metaKey || e.altKey) return
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return
       const i = ['1', '2', '3', '4', '5'].indexOf(e.key)
       if (i >= 0) {
@@ -175,9 +176,9 @@ function SidePanel({ onSeeResults }: { onSeeResults: () => void }) {
   const { session, saved, rev } = useApp()
   const n = saved.answers.length
   const info = useMemo(() => {
-    const thetas = session.draws(DRAWS_FOR_DESIGN)
+    const thetas = session.draws(DRAWS_FOR_PLAN)
     const life = currentLife(saved.profile)
-    const values = activityValues(thetas, life.state.hours, life.state.consumption, life.state.householdSize)
+    const values = lifeActivityValues(thetas, life)
       .filter((v) => v.key !== 'sleep' || v.points > 0)
       .sort((a, b) => b.points - a.points)
     return { values, confidence: session.confidence(), type: personalityType(session.posterior) }

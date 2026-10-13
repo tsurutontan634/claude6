@@ -11,6 +11,7 @@ import { selectQuestion, predictiveDistribution } from './design'
 import {
   commuteAtHours,
   currentJob,
+  consumptionFloor,
   currentLife,
   grossAtHours,
   hasFamilyAt,
@@ -23,6 +24,7 @@ import {
   type CurrentLife,
 } from './household'
 import { UtilityKit, type WeekOutcome } from './kit'
+import { expectedUtility } from './week'
 import { PRIORS } from './priors'
 
 export const DRAWS_FOR_DESIGN = 300
@@ -59,7 +61,8 @@ export class Session {
   posterior: ParticlePosterior
   answers: Answer[] = []
   private usedSignatures = new Set<string>()
-  private drawsCache: { n: number; k: number; thetas: Float64Array } | null = null
+  /** 事後分布からのサンプルのキャッシュ（粒子数 k ごと。回答や事前分布が変わったら消す） */
+  private drawsCache = new Map<number, Float64Array>()
 
   constructor(
     public profile: Profile,
@@ -77,7 +80,7 @@ export class Session {
   setProfile(p: Profile, onProgress?: (f: number) => void): void {
     this.profile = p
     this.posterior = this.freshPosterior()
-    this.drawsCache = null
+    this.drawsCache.clear()
     if (this.answers.length) this.posterior.rebuild(this.answers.map(compileAnswer), onProgress)
   }
 
@@ -86,7 +89,7 @@ export class Session {
     this.answers = answers.slice()
     this.usedSignatures = new Set(answers.map((a) => questionSignature(a.question)))
     this.posterior = this.freshPosterior()
-    this.drawsCache = null
+    this.drawsCache.clear()
     if (!answers.length) return
     for (const phi of this.posterior.rebuildSteps(answers.map(compileAnswer))) {
       onProgress?.(phi)
@@ -94,9 +97,20 @@ export class Session {
     }
   }
 
+  /**
+   * プロフィールを変える。回答（比べた2つの生活の中身）はそのままなので、事前分布だけを差し替えて
+   * 重要度で重みを付け直す。重みが偏りすぎたときだけ、回答から作り直す。
+   */
   async setProfileAsync(p: Profile, onProgress?: (f: number) => void): Promise<void> {
     this.profile = p
-    await this.loadAnswersAsync(this.answers, onProgress)
+    this.drawsCache.clear()
+    const { mu, sd } = personalPrior(p)
+    if (this.answers.length === 0) {
+      this.posterior = this.freshPosterior()
+      return
+    }
+    const ess = this.posterior.setPrior(mu, sd)
+    if (ess < this.posterior.n * 0.05) await this.loadAnswersAsync(this.answers, onProgress)
   }
 
   /** 保存しておいた粒子から復元（回答が同じときだけ） */
@@ -104,7 +118,7 @@ export class Session {
     this.answers = answers.slice()
     this.usedSignatures = new Set(answers.map((a) => questionSignature(a.question)))
     this.posterior = this.freshPosterior()
-    this.drawsCache = null
+    this.drawsCache.clear()
     return this.posterior.restore(data, answers.map(compileAnswer))
   }
 
@@ -112,7 +126,7 @@ export class Session {
     this.answers = answers.slice()
     this.usedSignatures = new Set(answers.map((a) => questionSignature(a.question)))
     this.posterior = this.freshPosterior()
-    this.drawsCache = null
+    this.drawsCache.clear()
     if (answers.length) this.posterior.rebuild(answers.map(compileAnswer), onProgress)
   }
 
@@ -121,23 +135,29 @@ export class Session {
     this.answers.push(a)
     this.usedSignatures.add(questionSignature(q))
     this.posterior.addAnswer(compileAnswer(a))
-    this.drawsCache = null
+    this.drawsCache.clear()
     return a
   }
 
-  /** 直前の回答を取り消す（事後分布は回答の再適用で作り直す） */
-  undo(onProgress?: (f: number) => void): Answer | null {
+  /** 直前の回答を取り消す。直近の数問は保存した状態に即座に戻し、それより前は回答から作り直す */
+  async undoAsync(onProgress?: (f: number) => void): Promise<Answer | null> {
     const last = this.answers.pop() ?? null
-    if (last) this.loadAnswers(this.answers, onProgress)
+    if (!last) return null
+    this.drawsCache.clear()
+    if (this.posterior.undoLast()) {
+      this.usedSignatures = new Set(this.answers.map((a) => questionSignature(a.question)))
+      return last
+    }
+    await this.loadAnswersAsync(this.answers, onProgress)
     return last
   }
 
   /** 事後分布からの等重みサンプル（k × N_PARAMS） */
   draws(k: number): Float64Array {
-    const n = this.answers.length
-    if (this.drawsCache && this.drawsCache.n === n && this.drawsCache.k === k) return this.drawsCache.thetas
-    const thetas = this.posterior.draw(k, 1000 + n)
-    this.drawsCache = { n, k, thetas }
+    const hit = this.drawsCache.get(k)
+    if (hit) return hit
+    const thetas = this.posterior.draw(k, 1000 + this.answers.length)
+    this.drawsCache.set(k, thetas)
     return thetas
   }
 
@@ -190,6 +210,12 @@ export interface WeekPlan {
   job: JobOption
   workHours: number
   commuteHours: number
+  /** 外注する前の家事時間（時間/週） */
+  housework: number
+  /** 収入が足りず、貯金を取り崩して暮らす前提か */
+  drawingDown: boolean
+  /** 睡眠などの最低限の時間が確保できるか */
+  feasible: boolean
   /** 世帯の月間手取り（給与＋児童手当） */
   netMonthly: number
   consumption: number
@@ -227,19 +253,29 @@ export class WeekPlanner {
     return u / k
   }
 
-  /** 仕事 job・労働時間 h のときの最適な1週間（貯蓄額は今と同じ） */
-  plan(job: JobOption, h: number, monthlySaving = this.profile.monthlySaving): WeekPlan {
+  /**
+   * 仕事 job・労働時間 h のときの最適な1週間（貯蓄額は今と同じ）。
+   * samePayRate=true なら「時給が同じなら」（パートタイムの時給の低下を入れない）
+   */
+  plan(job: JobOption, h: number, opts: { monthlySaving?: number; samePayRate?: boolean } = {}): WeekPlan {
     const p = this.profile
+    const life = this.life
+    const monthlySaving = opts.monthlySaving ?? p.monthlySaving
     const hh = householdAt(p, p.age)
     const commute = h > 0 ? commuteAtHours(job, h) : 0
-    const netMonthly = householdNetAnnual(p, grossAtHours(job, h)) / 12 + hh.allowance
-    const consumption = Math.max(1, netMonthly - monthlySaving - hh.education / 12)
-    const free = 168 - h - commute - p.housework - p.personalCare - hh.childcareMine - p.otherDuties - this.life.unlisted
+    const netMonthly = householdNetAnnual(p, grossAtHours(job, h, opts.samePayRate ?? false)) / 12 + hh.allowance
+    const raw = netMonthly - monthlySaving - hh.education / 12
+    const floor = consumptionFloor(p.necessities)
+    const drawingDown = raw < floor
+    const consumption = drawingDown ? Math.max(floor, Math.min(p.necessities, p.savings / 12)) : raw
+    // 家事は「外注する前の時間」から始め、時間を買うかどうかも最適化する
+    const housework = life.grossHousework
+    const free = 168 - h - commute - housework - p.personalCare - hh.childcareMine - p.otherDuties - life.caregiving - life.unlisted
     const shift = jobJoyShift(job, currentJob(p))
     const outcome = this.kit.week(
       {
         free,
-        housework: p.housework,
+        housework,
         consumption,
         necessities: p.necessities,
         householdSize: hh.size,
@@ -259,7 +295,7 @@ export class WeekPlanner {
       spend: outcome.spend,
       assetsMonths: p.savings / consumption,
       jobJoyShift: shift,
-      houseworkHours: Math.max(0, p.housework - outcome.freedHours),
+      houseworkHours: Math.max(0, housework - outcome.freedHours),
     }
     return {
       job,
@@ -271,9 +307,17 @@ export class WeekPlanner {
       monthlySaving,
       education: hh.education / 12,
       freeHours: free,
+      housework,
+      drawingDown,
+      feasible: free >= this.kit.table.base - 1e-9,
       outcome,
       state,
     }
+  }
+
+  /** モデルで直接計算した期待効用（今の生活との比較に使う） */
+  expected(pl: WeekPlan): number {
+    return expectedUtility(this.thetas, pl.state)
   }
 
   /** 今の仕事・今の労働時間のまま、時間とお金の使い方だけを最適化 */
@@ -286,7 +330,7 @@ export class WeekPlanner {
   hoursCurve(job: JobOption, from = 0, to = 70, step = 1): HoursPoint[] {
     const out: HoursPoint[] = []
     for (let h = from; h <= to + 1e-9; h += step) {
-      const pl = this.plan(job, h)
+      const pl = this.plan(job, h, { samePayRate: true })
       out.push({ hours: h, utility: pl.outcome.utility, netMonthly: pl.netMonthly })
     }
     return out

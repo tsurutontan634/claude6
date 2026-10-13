@@ -7,9 +7,9 @@ import { Loading, Meter, Stamp, deltaText, lsText } from '../common'
 export function HomePage() {
   const { session, saved, rev, go } = useApp()
   const n = saved.answers.length
-  const res = useDeferred(() => {
+  const { value: res } = useDeferred(() => {
     const wp = new WeekPlanner(saved.profile, session.draws(DRAWS_FOR_PLAN))
-    const gain = wp.optimalNow().outcome.utility - wp.currentUtility()
+    const gain = wp.expected(wp.optimalNow()) - wp.currentUtility()
     return { gain, type: personalityType(session.posterior), confidence: session.confidence() }
   }, [rev, saved.profile])
 
@@ -28,7 +28,7 @@ export function HomePage() {
         <div className="sheet section" style={{ gap: 8 }}>
           <span className="chip">手順 1</span>
           <h3>今の生活を書き込む</h3>
-          <p className="note">年齢、仕事、収入、家族、1週間の時間の使い方。いまはサンプル（30歳・会社員）が入っています。</p>
+          <p className="note">年齢、仕事、収入、家族、1週間の時間の使い方。{saved.isSample && 'いまはサンプル（30歳・会社員）が入っています。'}</p>
           <button type="button" className="btn ghost small" onClick={() => go('profile')}>
             プロフィールを編集
           </button>

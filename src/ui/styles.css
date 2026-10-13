@@ -33,6 +33,13 @@
   --on-work: #ffffff;
   --on-commute: #1b2230;
   --on-chores: #1b2230;
+  --on-sleep: #ffffff;
+  --on-friends: #1b2230;
+  --on-family: #1b2230;
+  --on-hobby: #1b2230;
+  --on-rest: #1b2230;
+  --on-exercise: #ffffff;
+  --on-learning: #ffffff;
 
   --font-display: 'Klee One', 'Hiragino Maru Gothic ProN', 'Yu Gothic', sans-serif;
   --font-body: 'Zen Kaku Gothic New', 'Hiragino Kaku Gothic ProN', 'Yu Gothic UI', 'Meiryo', system-ui, sans-serif;
@@ -78,8 +85,15 @@
     --s-commute: #626872;
     --s-chores: #454a52;
     --on-work: #121411;
-    --on-commute: #eceee8;
-    --on-chores: #eceee8;
+    --on-commute: #ffffff;
+    --on-chores: #ffffff;
+    --on-sleep: #121411;
+    --on-friends: #121411;
+    --on-family: #121411;
+    --on-hobby: #121411;
+    --on-rest: #121411;
+    --on-exercise: #ffffff;
+    --on-learning: #121411;
   }
 }
 :root[data-theme='dark'] {
@@ -110,8 +124,15 @@
   --s-commute: #626872;
   --s-chores: #454a52;
   --on-work: #121411;
-  --on-commute: #eceee8;
-  --on-chores: #eceee8;
+  --on-commute: #ffffff;
+  --on-chores: #ffffff;
+  --on-sleep: #121411;
+  --on-friends: #121411;
+  --on-family: #121411;
+  --on-hobby: #121411;
+  --on-rest: #121411;
+  --on-exercise: #ffffff;
+  --on-learning: #121411;
 }
 
 * {
@@ -603,6 +624,9 @@ input[type='range'] {
   color: var(--ink-2);
   cursor: pointer;
 }
+.seg button:focus-visible {
+  outline-offset: -3px;
+}
 .seg button[aria-pressed='true'] {
   background: var(--action);
   color: var(--action-ink);
@@ -876,12 +900,8 @@ legend {
   overflow: hidden;
   font-size: 11px;
   font-weight: 700;
-  color: #ffffff;
   white-space: nowrap;
   cursor: default;
-}
-.weekbar .seg-h.dark-text {
-  color: #1b2230;
 }
 
 /* 読み込み */

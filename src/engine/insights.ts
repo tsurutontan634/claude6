@@ -2,9 +2,10 @@
 
 import type { ActivityKey, Hours, Profile, WeekState } from './types'
 import { ACTIVITY_KEYS } from './types'
-import { ACTIVITIES, C_REF, N_PARAMS, P_BETA, P_ETA, P_S, P_W, PARAM_DEFS, P_SECMAX, P_AEXP, P_AGOODS, P_ASOCIAL, P_WORKJOY, crra, utilityBreakdown, type UtilityBreakdown } from './model'
+import { ACTIVITIES, C_REF, N_PARAMS, P_BETA, P_ETA, P_S, P_W, PARAM_DEFS, P_SECMAX, P_AEXP, P_AGOODS, P_ASOCIAL, P_WORKJOY, crra, utilityBreakdown, BELOW_MIN_FACTOR, type UtilityBreakdown } from './model'
 import { buildTimeValueTable, timeAlloc, type TimeLimits } from './week'
-import { WEEKS_PER_MONTH, householdAt } from './household'
+import { PRIORS } from './priors'
+import { WEEKS_PER_MONTH, consumptionFloor, householdAt, type CurrentLife } from './household'
 import { takeHome } from './tax'
 import type { ParticlePosterior } from './posterior'
 
@@ -35,33 +36,44 @@ export function activityValues(thetas: Float64Array, hours: Hours, consumption: 
   const mu = moneyMarginal(thetas, consumption, householdSize)
   return ACTIVITY_KEYS.map((key, i) => {
     const meta = ACTIVITIES[key]
-    const x = Math.max(0, hours[key] - meta.min)
+    const x = hours[key] - meta.min
     let s = 0
     for (let j = 0; j < k; j++) {
       const o = j * N_PARAMS
-      s += thetas[o + P_W + i] * Math.exp(-x / thetas[o + P_S + i])
+      // 最低限を下回っている（睡眠が1日5時間未満など）なら、急な損失の傾き
+      s += x < 0 ? BELOW_MIN_FACTOR * thetas[o + P_W + i] : thetas[o + P_W + i] * Math.exp(-x / thetas[o + P_S + i])
     }
-    const points = s / k - meta.fatigue
+    let points = s / k - meta.fatigue
+    // 休息＋趣味が多すぎるときのペナルティ（モデルと同じ）
+    if ((key === 'rest' || key === 'hobby') && hours.rest + hours.hobby >= PRIORS.fixed.soloCap) points -= PRIORS.fixed.soloPenalty
     // 週1時間 = 月 4.345 時間。月あたりの金額に直してから1時間あたりにする
     const yenPerHour = mu > 0 ? points / mu / WEEKS_PER_MONTH : 0
     return { key, points, yenPerHour }
   })
 }
 
-/** 推定の幅：事後分布を groups 個に分けて、それぞれで最適な時間配分を出し、範囲を取る */
-export function allocationRanges(thetas: Float64Array, free: number, limits: TimeLimits, groups = 8): Record<ActivityKey, [number, number]> {
-  const k = thetas.length / N_PARAMS
-  const size = Math.floor(k / groups)
+/** 今の生活での各活動の「あと1時間」の価値（画面どうしで同じ値になるよう、計算をここにまとめる） */
+export function lifeActivityValues(thetas: Float64Array, life: CurrentLife): ActivityValue[] {
+  return activityValues(thetas, life.state.hours, Math.max(1, life.consumption - life.state.spend.timeBuy), life.state.householdSize)
+}
+
+/**
+ * 推定の幅：事後分布から引いた「あり得るあなた」1人ずつについて最適な時間配分を出し、
+ * 活動ごとに 10〜90% の範囲を取る（好みの不確かさで最適な時間がどれくらい動くか）。
+ */
+export function allocationRanges(thetas: Float64Array, free: number, limits: TimeLimits, maxDraws = 200): Record<ActivityKey, [number, number]> {
+  const k = Math.min(maxDraws, thetas.length / N_PARAMS)
+  const per: Record<ActivityKey, number[]> = {} as Record<ActivityKey, number[]>
+  for (const key of ACTIVITY_KEYS) per[key] = []
+  for (let j = 0; j < k; j++) {
+    const one = thetas.slice(j * N_PARAMS, (j + 1) * N_PARAMS)
+    const alloc = timeAlloc(buildTimeValueTable(one, free + 1, limits), free)
+    for (const key of ACTIVITY_KEYS) per[key].push(alloc[key])
+  }
   const out = {} as Record<ActivityKey, [number, number]>
-  for (const key of ACTIVITY_KEYS) out[key] = [Infinity, -Infinity]
-  for (let g = 0; g < groups; g++) {
-    const sub = thetas.subarray(g * size * N_PARAMS, (g + 1) * size * N_PARAMS)
-    const table = buildTimeValueTable(new Float64Array(sub), free + 1, limits)
-    const alloc = timeAlloc(table, free)
-    for (const key of ACTIVITY_KEYS) {
-      out[key][0] = Math.min(out[key][0], alloc[key])
-      out[key][1] = Math.max(out[key][1], alloc[key])
-    }
+  for (const key of ACTIVITY_KEYS) {
+    const v = per[key].sort((a, b) => a - b)
+    out[key] = [v[Math.floor(0.1 * (v.length - 1))], v[Math.ceil(0.9 * (v.length - 1))]]
   }
   return out
 }
@@ -105,13 +117,14 @@ export function personalityType(post: ParticlePosterior, minAnswers = 12): TypeR
   const mean = new Float64Array(p)
   for (let i = 0; i < n; i++) for (let j = 0; j < p; j++) mean[j] += w[i] * post.z[i * p + j]
   const dev = (j: number) => (mean[j] - post.mu[j]) / post.sd[j]
+  // パラメータの数が違う分野を公平に比べるため、合計を √(数) で割る（独立なら標準偏差がそろう）
   const scores = DOMAINS.map((d) => ({
     id: d.id,
     label: d.label,
-    score: d.params.reduce((s, j) => s + dev(j), 0) / d.params.length,
+    score: d.params.reduce((s, j) => s + dev(j), 0) / Math.sqrt(d.params.length),
   }))
   const best = scores.reduce((a, b) => (b.score > a.score ? b : a))
-  const id = best.score < 0.25 ? 'balance' : best.id
+  const id = best.score < 0.35 ? 'balance' : best.id
   return { id, ...TYPES[id], scores: scores.map(({ label, score }) => ({ label, score })) }
 }
 
@@ -145,17 +158,23 @@ export interface MoneyCurvePoint {
  * 世帯年収 I（額面）のときの満足度。手取りに直し、今と同じ貯蓄率で消費すると仮定する。
  * 個人の推定は「今の年収・今の満足度」を基準点にして、消費の効用の差で動かす。
  */
-export function moneyCurve(p: Profile, thetas: Float64Array, currentGrossHousehold: number, currentConsumption: number): MoneyCurvePoint[] {
+export function moneyCurve(
+  p: Profile,
+  thetas: Float64Array,
+  currentGrossHousehold: number,
+  currentConsumption: number,
+  incomes?: number[],
+): MoneyCurvePoint[] {
   const hh = householdAt(p, p.age)
   const sq = Math.sqrt(hh.size)
   const net0 = takeHome(currentGrossHousehold, p.age).net
-  const consRatio = net0 > 0 ? (currentConsumption * 12) / net0 : 0.8
+  const consRatio = net0 > 0 ? Math.min(1.2, (currentConsumption * 12) / net0) : 0.8
   const k = thetas.length / N_PARAMS
   const x0 = currentConsumption / sq / C_REF
   const out: MoneyCurvePoint[] = []
-  for (let lnI = Math.log(100); lnI <= Math.log(8000) + 1e-9; lnI += (Math.log(8000) - Math.log(100)) / 60) {
-    const I = Math.exp(lnI)
-    const C = (takeHome(I * 10_000, p.age).net * consRatio) / 12
+  const grid = incomes ?? Array.from({ length: 61 }, (_, i) => Math.exp(Math.log(100) + ((Math.log(8000) - Math.log(100)) * i) / 60))
+  for (const I of grid) {
+    const C = Math.max(consumptionFloor(p.necessities), (takeHome(I * 10_000, p.age).net * consRatio) / 12)
     const x = C / sq / C_REF
     const vals: number[] = []
     for (let j = 0; j < k; j++) {

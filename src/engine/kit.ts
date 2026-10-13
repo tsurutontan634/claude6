@@ -30,9 +30,9 @@ import {
 } from './week'
 import type { Hours, Spend } from './types'
 
-const CU_LN_MIN = Math.log(0.03)
+const CU_LN_MIN = Math.log(0.002)
 const CU_LN_MAX = Math.log(60)
-const CU_N = 400
+const CU_N = 600
 const SEC_MAX_MONTHS = 600
 const SEC_STEP = 0.25
 const SB_STEP = 2500

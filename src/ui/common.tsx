@@ -1,6 +1,6 @@
 // 画面共通の部品と色の対応
 
-import { useId, type ReactNode } from 'react'
+import { useEffect, useId, useState, type ReactNode } from 'react'
 import type { ActivityKey } from '../engine/types'
 
 export const ACT_COLOR: Record<ActivityKey, string> = {
@@ -13,17 +13,10 @@ export const ACT_COLOR: Record<ActivityKey, string> = {
   learning: 'var(--s-learning)',
 }
 
-/** 塗りの上の文字色（明るい塗りには濃い文字） */
-export const ACT_DARK_TEXT: Record<ActivityKey, boolean> = {
-  sleep: false,
-  friends: true,
-  family: true,
-  hobby: true,
-  rest: true,
-  exercise: false,
-  learning: false,
-}
-
+/**
+ * 数値の入力欄。入力中は文字のまま持ち、数として読めるときだけ反映する。
+ * 範囲（min/max）への丸めは、欄を離れたときに行う（1文字ずつ補正されて打てなくなるのを防ぐ）。
+ */
 export function NumberField(props: {
   id: string
   label: string
@@ -34,7 +27,27 @@ export function NumberField(props: {
   min?: number
   max?: number
   hint?: ReactNode
+  /** 小数を許すか（既定は許す） */
+  integer?: boolean
 }) {
+  const [text, setText] = useState(fmtNum(props.value))
+  const [focused, setFocused] = useState(false)
+  useEffect(() => {
+    if (!focused) setText(fmtNum(props.value))
+  }, [props.value, focused])
+  const clamp = (v: number) => {
+    let x = props.integer ? Math.round(v) : v
+    if (props.min !== undefined) x = Math.max(props.min, x)
+    if (props.max !== undefined) x = Math.min(props.max, x)
+    return x
+  }
+  const out = (() => {
+    const v = parseFloat(text)
+    if (!Number.isFinite(v)) return null
+    if (props.min !== undefined && v < props.min) return `${props.min}${props.unit ?? ''}以上で入力してください`
+    if (props.max !== undefined && v > props.max) return `${props.max}${props.unit ?? ''}以下で入力してください`
+    return null
+  })()
   return (
     <div className="field">
       <label htmlFor={props.id}>{props.label}</label>
@@ -43,20 +56,35 @@ export function NumberField(props: {
           id={props.id}
           type="number"
           inputMode="decimal"
-          value={Number.isFinite(props.value) ? props.value : ''}
+          value={text}
           step={props.step ?? 1}
           min={props.min}
           max={props.max}
+          aria-invalid={out ? true : undefined}
+          onFocus={() => setFocused(true)}
           onChange={(e) => {
+            setText(e.target.value)
             const v = parseFloat(e.target.value)
-            props.onChange(Number.isFinite(v) ? v : 0)
+            if (Number.isFinite(v)) props.onChange(v)
+          }}
+          onBlur={() => {
+            setFocused(false)
+            const v = parseFloat(text)
+            const next = clamp(Number.isFinite(v) ? v : props.value)
+            setText(fmtNum(next))
+            if (next !== props.value) props.onChange(next)
           }}
         />
         {props.unit && <span>{props.unit}</span>}
       </div>
-      {props.hint && <span className="hint">{props.hint}</span>}
+      {out ? <span className="hint down">{out}</span> : props.hint && <span className="hint">{props.hint}</span>}
     </div>
   )
+}
+
+function fmtNum(v: number): string {
+  if (!Number.isFinite(v)) return ''
+  return String(Math.round(v * 1000) / 1000)
 }
 
 export function Seg<T extends string | number | boolean>(props: {

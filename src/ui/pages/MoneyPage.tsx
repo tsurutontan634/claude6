@@ -1,6 +1,6 @@
 import { useApp } from '../App'
 import { DRAWS_FOR_PLAN, WeekPlanner } from '../../engine/session'
-import { CAO_INCOME_BANDS, activityValues, moneyCurve, moneyMarginal } from '../../engine/insights'
+import { CAO_INCOME_BANDS, lifeActivityValues, moneyCurve, moneyMarginal } from '../../engine/insights'
 import { grossAtHours, currentJob, partnerAt } from '../../engine/household'
 import { LineChart, PairBars, useDeferred } from '../charts'
 import { Loading, deltaText, manYen } from '../common'
@@ -18,7 +18,7 @@ const SPEND_COLOR = {
 export function MoneyPage() {
   const { session, saved, rev, go } = useApp()
   const p = saved.profile
-  const res = useDeferred(() => {
+  const { value: res, pending } = useDeferred(() => {
     const thetas = session.draws(DRAWS_FOR_PLAN)
     const wp = new WeekPlanner(p, thetas)
     const job = currentJob(p)
@@ -27,7 +27,7 @@ export function MoneyPage() {
     const householdGross = grossAtHours(job, job.weeklyHours) + (partnerAt(p, p.age) ? p.partnerIncome : 0)
     const curve = moneyCurve(p, thetas, householdGross, life.consumption)
     const mu = moneyMarginal(thetas, life.consumption - life.state.spend.timeBuy, life.state.householdSize)
-    const values = activityValues(thetas, p.currentHours, life.consumption - life.state.spend.timeBuy, life.state.householdSize)
+    const values = lifeActivityValues(thetas, life)
     const freeValue = Math.max(...values.map((v) => v.yenPerHour))
     // 安心感のカーブ（月数 → 点）
     const k = thetas.length / N_PARAMS
@@ -37,10 +37,10 @@ export function MoneyPage() {
       for (let j = 0; j < k; j++) s += thetas[j * N_PARAMS + P_SECMAX] * (1 - Math.exp(-m / thetas[j * N_PARAMS + P_SECM]))
       return { x: m, y: s / k }
     })
-    // 年収が 2倍 / 半分 になったら
+    // 年収が 2倍 / 半分 になったら（同じ貯蓄率で使うと仮定して、その年収で直接計算）
     const at = (f: number) => {
-      const target = (householdGross * f) / 10_000
-      const pt = curve.reduce((a, b) => (Math.abs(Math.log(b.income / target)) < Math.abs(Math.log(a.income / target)) ? b : a))
+      if (householdGross <= 0) return 0
+      const pt = moneyCurve(p, thetas, householdGross, life.consumption, [(householdGross * f) / 10_000])[0]
       return pt.ls - p.lifeSatisfaction
     }
     return { opt, life, householdGross, curve, mu, freeValue, sec, double: at(2), half: at(0.5), wp }
@@ -57,7 +57,9 @@ export function MoneyPage() {
       <section className="section" aria-labelledby="m-title">
         <div className="section-head">
           <h2 id="m-title">お金はどこまで幸せを増やすか</h2>
-          <span className="note">世帯の額面年収 {manYen(householdGross, 0)}・世帯の月の消費 {manYen(life.consumption)}（貯蓄・教育費を除く）</span>
+          <span className="note">
+            世帯の額面年収 {manYen(householdGross, 0)}・世帯の月の消費 {manYen(life.consumption)}（貯蓄・教育費を除く）{pending && '（更新中…）'}
+          </span>
         </div>
         <div className="sheet">
           <div className="kpis">
@@ -69,7 +71,7 @@ export function MoneyPage() {
             <div className="kpi">
               <span className="label">年収が今の半分になったら</span>
               <span className="value">{deltaText(half)}</span>
-              <span className="sub">減るときの方が大きく効く</span>
+              <span className="sub">{Math.abs(half) > Math.abs(double) ? '減るときの方が大きく効く' : '同じ貯蓄率で使うと仮定'}</span>
             </div>
             <div className="kpi">
               <span className="label">月1万円の価値</span>
@@ -104,7 +106,7 @@ export function MoneyPage() {
                 points: CAO_INCOME_BANDS.map((b) => ({ x: b.mid, y: b.ls })),
               },
             ]}
-            markers={[{ x: householdGross / 10_000, y: p.lifeSatisfaction, label: '今', color: 'var(--ink)' }]}
+            markers={householdGross >= 1_000_000 ? [{ x: householdGross / 10_000, y: p.lifeSatisfaction, label: '今', color: 'var(--ink)' }] : []}
             xTicks={[100, 200, 400, 700, 1000, 2000, 4000, 8000]}
             xFormat={(v) => (v >= 1000 ? `${v / 1000}千万` : `${v}万`)}
             yFormat={(v) => v.toFixed(1)}
@@ -112,6 +114,36 @@ export function MoneyPage() {
             tipTitle={(x) => `世帯年収 約${Math.round(x)}万円`}
             tipValue={(_s, y) => `${y.toFixed(2)}点`}
           />
+          <details>
+            <summary>数値で見る</summary>
+            <div className="table-wrap">
+              <table className="wide">
+                <thead>
+                  <tr>
+                    <th>世帯年収（内閣府の区分）</th>
+                    <th className="num">日本の平均</th>
+                    <th className="num">あなたの推定（中央値）</th>
+                    <th className="num">80%の幅</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {CAO_INCOME_BANDS.map((b) => {
+                    const c = curve.reduce((a, x) => (Math.abs(Math.log(x.income / b.mid)) < Math.abs(Math.log(a.income / b.mid)) ? x : a))
+                    return (
+                      <tr key={b.label}>
+                        <td>{b.label}</td>
+                        <td className="num">{b.ls.toFixed(2)}</td>
+                        <td className="num">{c.ls.toFixed(2)}</td>
+                        <td className="num">
+                          {c.lo.toFixed(2)}〜{c.hi.toFixed(2)}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </details>
           <p className="note">
             日本の平均は内閣府「満足度・生活の質に関する調査」（2019）の世帯年収帯ごとの平均値で、年収帯の中央に点を置いています。2,000〜3,000万円で頂点になり、それ以上ではわずかに下がります（高年収帯は回答者が少なく不確か）。あなたの線は、今の年収と今の満足度を基準に、推定した「お金の頭打ちの強さ」で描いています。年齢・健康・家族など他の条件は今のままとした場合の、お金だけの効果です。
           </p>
@@ -154,7 +186,7 @@ export function MoneyPage() {
             <li>その他：ふだんの買い物や外食など、特に分けずに使うお金（上乗せ効果はないが、消費としての満足はある）</li>
           </ul>
           <p className="note">
-            体験・人のための支出は「同じ金額のふつうの消費」より満足を生みやすいという研究に基づく上乗せを、あなたの回答で調整しています。上乗せは少額ほど大きく、ある程度を超えると「その他（ふつうの消費）」と変わらなくなるので、そこから先はどう使っても同じとみなしています。「時間を買う」は家事代行1時間 {yen(3000)} として、浮いた時間の価値と比べて決めています。おすすめの使い方での上乗せ効果は合計 {deltaText(opt.outcome.spendUtility)} の推定です。
+            体験・人のための支出は「同じ金額のふつうの消費」より満足を生みやすいという研究に基づく上乗せで計算しています（効果が小さいため、回答ではあまり変わりません）。上乗せは少額ほど大きく、ある程度を超えると「その他（ふつうの消費）」と変わらなくなるので、そこから先はどう使っても同じとみなしています。「時間を買う」は家事代行1時間 {yen(3000)} として、浮いた時間の価値と比べて決めています。おすすめの使い方での上乗せ効果は合計 {deltaText(opt.outcome.spendUtility)} の推定です。
           </p>
         </div>
       </section>

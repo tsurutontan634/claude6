@@ -4,29 +4,33 @@ import { ACTIVITIES } from '../../engine/model'
 import { DRAWS_FOR_PLAN, WeekPlanner, type WeekPlan } from '../../engine/session'
 import { currentJob, limitsFor } from '../../engine/household'
 import { activityValues, allocationRanges, meanBreakdown } from '../../engine/insights'
+import { OVERWORK_FROM } from '../../engine/model'
+import { PRIORS } from '../../engine/priors'
 import { LineChart, WeekBars, useDeferred, type WeekSegment } from '../charts'
-import { ACT_COLOR, ACT_DARK_TEXT, Loading, Stamp, deltaText, lsText, manYen } from '../common'
+import { ACT_COLOR, Loading, Stamp, deltaText, lsText, manYen } from '../common'
 import { sleepPerNight, trimNum, yen } from '../../engine/format'
 import type { UtilityBreakdown } from '../../engine/model'
 
 function segmentsFor(hours: Record<ActivityKey, number>, fixed: { work: number; commute: number; chores: number }): WeekSegment[] {
   return [
-    { key: 'work', label: '仕事', hours: fixed.work, color: 'var(--s-work)' },
-    { key: 'commute', label: '通勤', hours: fixed.commute, color: 'var(--s-commute)' },
-    { key: 'chores', label: '家事・身の回り', hours: fixed.chores, color: 'var(--s-chores)' },
-    ...ACTIVITY_KEYS.map((k) => ({ key: k, label: ACTIVITIES[k].short, hours: hours[k], color: ACT_COLOR[k], darkText: ACT_DARK_TEXT[k] })),
+    { key: 'work', label: '仕事', hours: fixed.work, color: 'var(--s-work)', textColor: 'var(--on-work)' },
+    { key: 'commute', label: '通勤', hours: fixed.commute, color: 'var(--s-commute)', textColor: 'var(--on-commute)' },
+    { key: 'chores', label: '家事・身の回り', hours: fixed.chores, color: 'var(--s-chores)', textColor: 'var(--on-chores)' },
+    ...ACTIVITY_KEYS.map((k) => ({ key: k, label: ACTIVITIES[k].short, hours: hours[k], color: ACT_COLOR[k], textColor: `var(--on-${k})` })),
   ]
 }
 
 export function WeekPage() {
   const { session, saved, rev, go } = useApp()
   const p = saved.profile
-  const res = useDeferred(() => {
+  const { value: res, pending } = useDeferred(() => {
     const thetas = session.draws(DRAWS_FOR_PLAN)
     const wp = new WeekPlanner(p, thetas)
     const job = currentJob(p)
     const opt = wp.optimalNow()
     const uNow = wp.currentUtility()
+    // 今の生活と同じ物差し（モデルで直接計算した期待効用）で比べる
+    const uOpt = wp.expected(opt)
     const ranges = allocationRanges(thetas, opt.freeHours + opt.outcome.freedHours, limitsFor(p))
     const curve = wp.hoursCurve(job, 10, 70, 1)
     const bestH = curve.reduce((a, b) => (b.utility > a.utility ? b : a))
@@ -34,15 +38,17 @@ export function WeekPage() {
     const bNow = meanBreakdown(thetas, wp.life.state)
     const bOpt = meanBreakdown(thetas, opt.state)
     const jobs = p.jobs.length > 1 ? wp.compareJobs() : null
-    return { wp, job, opt, uNow, ranges, curve, bestH, valuesOpt, bNow, bOpt, jobs }
+    return { wp, job, opt, uNow, uOpt, ranges, curve, bestH, valuesOpt, bNow, bOpt, jobs }
   }, [rev, p])
 
   if (!res) return <Loading label="あなたの効用関数で、最適な1週間を計算しています…" />
-  const { wp, job, opt, uNow, ranges, curve, bestH, valuesOpt, bNow, bOpt, jobs } = res
-  const gain = opt.outcome.utility - uNow
+  const { wp, job, opt, uNow, uOpt, ranges, curve, bestH, valuesOpt, bNow, bOpt, jobs } = res
+  const gain = uOpt - uNow
   const life = wp.life
-  const choresNow = p.housework + p.personalCare + life.household.childcareMine + p.otherDuties + life.unlisted
-  const choresOpt = Math.max(0, p.housework - opt.outcome.freedHours) + p.personalCare + life.household.childcareMine + p.otherDuties + life.unlisted
+  const choresNow = p.housework + p.personalCare + life.household.childcareMine + p.otherDuties + life.caregiving + life.unlisted
+  const choresOpt = Math.max(0, opt.housework - opt.outcome.freedHours) + p.personalCare + life.household.childcareMine + p.otherDuties + life.caregiving + life.unlisted
+  // 労働時間カーブ（時給が同じ前提）の「今」の点
+  const curveNow = curve.reduce((a, b) => (Math.abs(b.hours - job.weeklyHours) < Math.abs(a.hours - job.weeklyHours) ? b : a))
   const changes = ACTIVITY_KEYS.map((k) => ({ k, d: opt.outcome.hours[k] - p.currentHours[k] }))
     .filter((c) => Math.abs(c.d) >= 1)
     .sort((a, b) => Math.abs(b.d) - Math.abs(a.d))
@@ -53,8 +59,19 @@ export function WeekPage() {
       <section className="section" aria-labelledby="w-title">
         <div className="section-head">
           <h2 id="w-title">あなたにとって最適な1週間</h2>
-          <span className="note">今の仕事・今の働き方（週{trimNum(job.weeklyHours)}時間）・今の貯蓄額のまま、時間とお金の使い方だけを入れ替えた場合</span>
+          <span className="note">
+            今の仕事・今の働き方（週{trimNum(job.weeklyHours)}時間）・今の貯蓄額のまま、時間とお金の使い方だけを入れ替えた場合
+            {pending && '（更新中…）'}
+          </span>
         </div>
+        {life.drawingDown && (
+          <p className="callout">
+            手取りから貯蓄と教育費を引くと、必需的支出の6割に届きません。貯金を取り崩して必需的支出ぶんは使っている前提で計算しています。年金やその他の収入があれば、プロフィールの「お金」に入れてください。
+          </p>
+        )}
+        {!opt.feasible && (
+          <p className="callout">睡眠（1日5時間）などの最低限の時間が取れないほど、決まった用事で1週間が埋まっています。プロフィールの時間を見直してください。</p>
+        )}
         <div className="sheet">
           <div className="kpis">
             <Stamp small="配分を見直すと" big={deltaText(gain)} />
@@ -116,7 +133,7 @@ export function WeekPage() {
         <div className="sheet table-wrap">
           <table className="wide">
             <caption className="note" style={{ textAlign: 'left', paddingBottom: 6 }}>
-              「最適」の幅は、推定の不確かさ（あり得るあなたの好みの範囲）で最適な時間がどれくらい動くか。回答が増えると狭くなります。
+              「幅」は、推定の不確かさの中の「あり得るあなた」一人ひとりにとっての最適な時間の範囲（10〜90%）。回答が増えると狭くなります。最適な配分では、どの活動も「あと1時間の価値」がほぼ同じになります（限界効用均等）。
             </caption>
             <thead>
               <tr>
@@ -160,12 +177,15 @@ export function WeekPage() {
       <section className="section" aria-labelledby="h-title">
         <div className="section-head">
           <h2 id="h-title">働く時間を変えられたら？</h2>
-          <span className="note">時給は同じ・貯蓄額も同じと仮定。{!job.hoursFlexible && '今の仕事は時間を調整できない設定なので、あくまで仮定の話です。'}</span>
+          <span className="note">
+            時給は同じ・貯蓄額も同じと仮定。
+            {!job.hoursFlexible && `今の仕事は時間を調整できない設定なので、あくまで仮定の話です（実際にパートに移ると時給は約${Math.round(PRIORS.work.partTimeWageRatio * 100)}%になりがちで、人生計画ではそれを反映しています）。`}
+          </span>
         </div>
         <div className="sheet section">
           <p>
             あなたにとって満足度が最も高い労働時間は<strong>週{bestH.hours}時間</strong>
-            （今は週{trimNum(job.weeklyHours)}時間、差は{deltaText(bestH.utility - opt.outcome.utility)}）。
+            （今は週{trimNum(job.weeklyHours)}時間、差は{deltaText(bestH.utility - curveNow.utility)}）。
             {Math.abs(bestH.hours - job.weeklyHours) <= 3 ? '今の働き方は、あなたにとってほぼちょうど良い長さです。' : bestH.hours < job.weeklyHours ? '収入が減っても、時間を取るほうが満足度は上がる推定です。' : '時間を少し削っても、収入を増やすほうが満足度は上がる推定です。'}
           </p>
           <LineChart
@@ -179,7 +199,9 @@ export function WeekPage() {
               },
             ]}
             markers={[
-              { x: job.weeklyHours, y: p.lifeSatisfaction + (opt.outcome.utility - uNow), label: '今', color: 'var(--ink)' },
+              ...(Math.abs(curveNow.hours - job.weeklyHours) < 0.5
+                ? [{ x: curveNow.hours, y: p.lifeSatisfaction + (curveNow.utility - uNow), label: '今', color: 'var(--ink)' }]
+                : []),
               { x: bestH.hours, y: p.lifeSatisfaction + (bestH.utility - uNow), label: '最適', color: 'var(--accent)' },
             ]}
             xFormat={(v) => `${v}h`}
@@ -190,7 +212,7 @@ export function WeekPage() {
           />
           <p className="note">
             週{curve[0].hours}時間：世帯の手取り月{manYen(curve[0].netMonthly)}／週40時間：月{manYen(curve.find((c) => c.hours === 40)?.netMonthly ?? 0)}／週60時間：月
-            {manYen(curve.find((c) => c.hours === 60)?.netMonthly ?? 0)}。週45時間を超えると長時間労働のつらさが2乗で効いてきます。
+            {manYen(curve.find((c) => c.hours === 60)?.netMonthly ?? 0)}。週{OVERWORK_FROM}時間を超えると長時間労働のつらさが2乗で効いてきます。
           </p>
         </div>
         {jobs && (
@@ -212,9 +234,9 @@ export function WeekPage() {
                       {j.id === p.currentJobId && <span className="chip" style={{ marginLeft: 6 }}>今の仕事</span>}
                     </td>
                     <td className="num">{manYen(j.annualIncome, 0)}</td>
-                    <td className="num">{deltaText(fixed.outcome.utility - opt.outcome.utility)}</td>
+                    <td className="num">{deltaText(wp.expected(fixed) - uOpt)}</td>
                     <td className="num">
-                      {deltaText(best.outcome.utility - opt.outcome.utility)}（週{trimNum(best.workHours)}h）
+                      {deltaText(wp.expected(best) - uOpt)}（週{trimNum(best.workHours)}h）
                     </td>
                   </tr>
                 ))}

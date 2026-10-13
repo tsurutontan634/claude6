@@ -6,6 +6,14 @@ import { ACTIVITY_KEYS } from '../engine/types'
 import { DEFAULT_ASSUMPTIONS, type LifeAssumptions, type LifePolicy } from '../engine/lifeplan'
 import { sampleProfile } from '../engine/sample'
 import { hashSeed } from '../engine/rng'
+import { PARAM_DEFS } from '../engine/model'
+import { PRIORS } from '../engine/priors'
+import { CUTS, LAPSE, LIKELIHOOD_TEMPER } from '../engine/choice'
+import { SPEND_KEYS, type WeekState } from '../engine/types'
+import { TEMPLATE_LABELS } from '../engine/questions'
+
+/** モデル（事前分布・回答モデル）の指紋。校正を変えたら保存済みの粒子は使わない */
+const MODEL_FP = hashSeed(JSON.stringify([PARAM_DEFS.map((d) => [d.mu, d.sd]), CUTS, LAPSE, LIKELIHOOD_TEMPER, PRIORS]))
 
 const KEY = 'shiawase-haibun:v1'
 const POST_KEY = 'shiawase-haibun:posterior:v1'
@@ -66,7 +74,7 @@ export function clearSaved(): void {
 /** プロフィールと回答の組み合わせの指紋（粒子キャッシュが使えるかの判定） */
 export function signature(s: Saved): string {
   const last = s.answers[s.answers.length - 1]
-  return `${hashSeed(JSON.stringify(s.profile))}-${s.answers.length}-${last ? last.question.id + last.response : ''}`
+  return `${MODEL_FP}-${hashSeed(JSON.stringify(s.profile))}-${s.answers.length}-${last ? last.question.id + last.response : ''}`
 }
 
 interface PosteriorCache {
@@ -130,14 +138,38 @@ export function validateSaved(obj: unknown): Saved | null {
   if (!Array.isArray(p.jobs) || p.jobs.length === 0) p.jobs = base.jobs
   if (!p.jobs.some((j) => j.id === p.currentJobId)) p.currentJobId = p.jobs[0].id
   for (const k of ACTIVITY_KEYS) if (typeof p.currentHours[k] !== 'number') p.currentHours[k] = base.currentHours[k]
-  const answers = o.answers.filter(
-    (a) => a && a.question && a.question.a && a.question.b && typeof a.response === 'number' && a.response >= 0 && a.response <= 4,
-  )
-  // 古い形式の回答には家事時間がないので補う
-  for (const a of answers) {
-    if (typeof a.question.a.houseworkHours !== 'number') a.question.a.houseworkHours = p.housework
-    if (typeof a.question.b.houseworkHours !== 'number') a.question.b.houseworkHours = p.housework
+  // 年齢に対して古くなった値を直す
+  p.age = clampNum(p.age, 18, 85, base.age)
+  p.retireAge = clampNum(p.retireAge, p.age + 1, 90, Math.max(65, p.age + 1))
+  p.pensionAge = clampNum(p.pensionAge, 60, 75, 65)
+  if (p.partnerPlanAge !== null && (typeof p.partnerPlanAge !== 'number' || p.partnerPlanAge <= p.age)) {
+    p.hasPartner = p.hasPartner || typeof p.partnerPlanAge === 'number'
+    p.partnerPlanAge = null
   }
+  p.pensionNow = Number.isFinite(p.pensionNow) ? Math.max(0, p.pensionNow) : 0
+  p.otherIncome = Number.isFinite(p.otherIncome) ? Math.max(0, p.otherIncome) : 0
+  if (!Array.isArray(p.children)) p.children = []
+  // 古い形式の回答には家事時間がないので補う
+  for (const a of o.answers) {
+    if (a?.question?.a && typeof a.question.a.houseworkHours !== 'number') a.question.a.houseworkHours = p.housework
+    if (a?.question?.b && typeof a.question.b.houseworkHours !== 'number') a.question.b.houseworkHours = p.housework
+  }
+  const answers = o.answers.filter(
+    (a) =>
+      a &&
+      a.question &&
+      validState(a.question.a) &&
+      validState(a.question.b) &&
+      Array.isArray(a.question.textA) &&
+      Array.isArray(a.question.textB) &&
+      a.question.template in TEMPLATE_LABELS &&
+      Number.isInteger(a.response) &&
+      a.response >= 0 &&
+      a.response <= 4,
+  )
+  const cp = o.customPolicy
+  const customPolicy =
+    cp && Array.isArray(cp.stages) && cp.stages.every((st) => Number.isFinite(st?.from) && Number.isFinite(st?.hours)) && Number.isFinite(cp.retireAge) ? cp : null
   return {
     format: 'shiawase-haibun',
     version: 1,
@@ -145,7 +177,7 @@ export function validateSaved(obj: unknown): Saved | null {
     isSample: o.isSample ?? false,
     answers,
     assumptions: { ...DEFAULT_ASSUMPTIONS, ...(o.assumptions ?? {}) },
-    customPolicy: o.customPolicy ?? null,
+    customPolicy,
     savedAt: o.savedAt ?? Date.now(),
   }
 }
@@ -157,4 +189,21 @@ export function inEmbeddedFrame(): boolean {
   } catch {
     return true
   }
+}
+
+function clampNum(v: unknown, lo: number, hi: number, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, Math.round(v))) : fallback
+}
+
+/** 回答に保存された週の状態がすべて有限の数か */
+function validState(s: WeekState | undefined): boolean {
+  if (!s || typeof s !== 'object' || !s.hours || !s.spend) return false
+  const nums = [s.workHours, s.commuteHours, s.consumption, s.householdSize, s.assetsMonths, s.jobJoyShift, s.houseworkHours]
+  return (
+    nums.every((x) => typeof x === 'number' && Number.isFinite(x)) &&
+    ACTIVITY_KEYS.every((k) => Number.isFinite(s.hours[k])) &&
+    SPEND_KEYS.every((k) => Number.isFinite(s.spend[k])) &&
+    s.consumption > 0 &&
+    s.householdSize >= 1
+  )
 }

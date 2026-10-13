@@ -484,7 +484,7 @@ export const TEMPLATE_WEIGHTS: Record<Exclude<TemplateKey, 'saturation'>, number
   workTradeoff: 2,
   moneyCurvature: 2,
   sleepTradeoff: 1,
-  spendMix: 1.5,
+  spendMix: 0.5,
   timeBuying: 1,
   security: 1.5,
   commute: 1,
@@ -524,5 +524,8 @@ export function questionSignature(q: Question): string {
       Math.round(s.assetsMonths),
       ...(['experience', 'goods', 'social', 'timeBuy'] as (keyof Spend)[]).map((k) => Math.round(s.spend[k] / 1000)),
     ].join(',')
-  return `${q.template}|${f(q.a)}|${f(q.b)}`
+  // A と B を入れ替えて出した質問も同じ質問とみなす（順序に依存しない署名）
+  const x = f(q.a)
+  const y = f(q.b)
+  return `${q.template}|${x < y ? `${x}|${y}` : `${y}|${x}`}`
 }

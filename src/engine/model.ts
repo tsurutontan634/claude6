@@ -256,15 +256,20 @@ export function crra(x: number, eta: number): number {
   return (Math.pow(x, 1 - eta) - 1) / (1 - eta)
 }
 
-/** 飽和型の活動効用：w·S·(1 − e^{−(h−min)/S}) − fatigue·(h−min) */
+/** 最低限の時間（睡眠の1日5時間など）を下回ると、1時間ごとに最初の1時間の価値の何倍の損失か */
+export const BELOW_MIN_FACTOR = 3
+
+/** 飽和型の活動効用：w·S·(1 − e^{−(h−min)/S}) − fatigue·(h−min)。min を下回ると急な損失 */
 export function activityUtility(w: number, S: number, fatigue: number, h: number, min: number): number {
-  const x = Math.max(0, h - min)
+  const x = h - min
+  if (x < 0) return BELOW_MIN_FACTOR * w * x
   return w * S * (1 - Math.exp(-x / S)) - fatigue * x
 }
 
 /** 活動の限界効用（h での追加1時間の価値） */
 export function activityMarginal(w: number, S: number, fatigue: number, h: number, min: number): number {
-  const x = Math.max(0, h - min)
+  const x = h - min
+  if (x < 0) return BELOW_MIN_FACTOR * w
   return w * Math.exp(-x / S) - fatigue
 }
 

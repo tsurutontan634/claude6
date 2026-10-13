@@ -24,6 +24,8 @@ export interface PosteriorOptions {
 }
 
 const LOG_TRANSFORM: boolean[] = PARAM_DEFS.map((d) => d.transform === 'log')
+/** 取り消せる回答の数（それより前は回答から作り直す） */
+const UNDO_DEPTH = 5
 
 export class ParticlePosterior {
   readonly n: number
@@ -109,8 +111,47 @@ export class ParticlePosterior {
     return 1 / s
   }
 
+  /** 取り消し用に、回答を取り込む直前の状態を保存しておく（直近 UNDO_DEPTH 問ぶん） */
+  private snapshots: { z: Float64Array; theta: Float64Array; logw: Float64Array; loglik: Float64Array; scale: number; resampleCount: number }[] = []
+
+  /** 事前分布だけを差し替える（プロフィール変更時）。重要度で重みを付け直し、偏ったら作り直す */
+  setPrior(mu: ArrayLike<number>, sd: ArrayLike<number>): number {
+    const { n, p } = this
+    for (let i = 0; i < n; i++) this.logw[i] -= this.logPrior(this.z, i * p)
+    this.mu.set(mu)
+    this.sd.set(sd)
+    for (let i = 0; i < n; i++) this.logw[i] += this.logPrior(this.z, i * p)
+    this.snapshots = []
+    const ess = this.ess()
+    if (ess < n / 2) this.resampleMove(1)
+    return ess
+  }
+
+  /** 直前の回答を取り消す。保存しておいた状態があれば即座に戻せる（なければ false） */
+  undoLast(): boolean {
+    const snap = this.snapshots.pop()
+    if (!snap) return false
+    this.answers.pop()
+    this.z = snap.z
+    this.theta = snap.theta
+    this.logw = snap.logw
+    this.loglik = snap.loglik
+    this.scale = snap.scale
+    this.resampleCount = snap.resampleCount
+    return true
+  }
+
   /** 1問の回答を取り込む */
   addAnswer(ans: CompiledAnswer): void {
+    this.snapshots.push({
+      z: this.z.slice(),
+      theta: this.theta.slice(),
+      logw: this.logw.slice(),
+      loglik: this.loglik.slice(),
+      scale: this.scale,
+      resampleCount: this.resampleCount,
+    })
+    if (this.snapshots.length > UNDO_DEPTH) this.snapshots.shift()
     this.answers.push(ans)
     const { n, p } = this
     for (let i = 0; i < n; i++) {
@@ -132,6 +173,7 @@ export class ParticlePosterior {
 
   /** rebuild を1段階ずつ進めるジェネレーター（画面を止めないよう、呼び出し側で間に休憩を挟める） */
   *rebuildSteps(answers: CompiledAnswer[]): Generator<number, void, unknown> {
+    this.snapshots = []
     this.answers = answers.slice()
     const { n, p } = this
     for (let i = 0; i < n; i++) {
@@ -171,7 +213,8 @@ export class ParticlePosterior {
       }
       for (let i = 0; i < n; i++) this.logw[i] = dphi * this.loglik[i]
       phi = Math.min(1, phi + dphi)
-      this.resampleMove(phi)
+      // 焼きなましの途中は移動を少なめに、最後の段階だけしっかり混ぜる
+      this.resampleMove(phi, phi >= 1 ? this.moves : 2)
       yield phi
     }
   }
@@ -194,7 +237,7 @@ export class ParticlePosterior {
   }
 
   /** 系統リサンプリング → MH 移動。phi は尤度の温度 */
-  private resampleMove(phi: number): void {
+  private resampleMove(phi: number, moves = this.moves): void {
     const { n, p } = this
     const w = this.weights()
     const { cov } = this.moments(w)
@@ -230,7 +273,7 @@ export class ParticlePosterior {
     const eps = new Float64Array(p)
     let accepted = 0
     let total = 0
-    for (let m = 0; m < this.moves; m++) {
+    for (let m = 0; m < moves; m++) {
       const s = (this.scale * 2.38) / Math.sqrt(p)
       let accM = 0
       for (let i = 0; i < n; i++) {
@@ -335,6 +378,7 @@ export class ParticlePosterior {
 
   restore(data: { z: number[]; logw: number[]; scale: number; resampleCount: number }, answers: CompiledAnswer[]): boolean {
     if (data.z.length !== this.n * this.p || data.logw.length !== this.n) return false
+    this.snapshots = []
     this.z = Float64Array.from(data.z)
     this.logw = Float64Array.from(data.logw)
     this.scale = data.scale

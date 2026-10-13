@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../App'
 import { DRAWS_FOR_PLAN, WeekPlanner } from '../../engine/session'
 import { LifeSimulator, defaultStages, lifeEvents, presetPolicies, type LifeAssumptions, type LifePolicy, type LifeResult } from '../../engine/lifeplan'
 import { currentJob, householdAt } from '../../engine/household'
 import { LineChart, useDeferred } from '../charts'
-import { Loading, RangeField, Seg, deltaText, lsText, manYen } from '../common'
+import { Loading, NumberField, RangeField, Seg, deltaText, lsText, manYen } from '../common'
 import { trimNum } from '../../engine/format'
 
 const PLAN_COLOR: Record<string, string> = {
@@ -23,7 +23,15 @@ export function LifePage() {
   const { session, saved, rev, setAssumptions, setCustomPolicy } = useApp()
   const p = saved.profile
   const A = saved.assumptions
-  const [selected, setSelected] = useState<string[]>(['current', 'current-opt', 'best'])
+  // スライダーは手元で動かし、止まってから保存・再計算する
+  const [aLocal, setALocal] = useState<LifeAssumptions>(A)
+  useEffect(() => setALocal(A), [A])
+  useEffect(() => {
+    if (JSON.stringify(aLocal) === JSON.stringify(A)) return
+    const t = setTimeout(() => setAssumptions(aLocal), 300)
+    return () => clearTimeout(t)
+  }, [aLocal, A, setAssumptions])
+  const [selected, setSelected] = useState<string[]>(['current', 'current-opt'])
   const [best, setBest] = useState<LifeResult | null>(null)
   const [searching, setSearching] = useState<number | null>(null)
   const [detail, setDetail] = useState<string>('current-opt')
@@ -31,20 +39,21 @@ export function LifePage() {
   const custom: LifePolicy = useMemo(() => {
     const job = currentJob(p)
     const stored = saved.customPolicy && saved.customPolicy.stages[0]?.from === p.age ? saved.customPolicy : null
+    const retireAge = Math.max(p.retireAge, p.age + 1)
     return (
       stored ?? {
         id: 'custom',
         name: '自分で作るプラン',
         description: '労働時間・引退年齢・貯蓄の方針を自分で決める',
-        stages: defaultStages(p.age, job.weeklyHours),
-        retireAge: p.retireAge,
+        stages: defaultStages(p.age, job.weeklyHours, retireAge),
+        retireAge,
         jobId: job.id,
         saving: 'optimal',
       }
     )
   }, [saved.customPolicy, p])
 
-  const base = useDeferred(() => {
+  const { value: base, pending } = useDeferred(() => {
     const thetas = session.draws(DRAWS_FOR_PLAN)
     const sim = new LifeSimulator(p, thetas, A)
     const presets = presetPolicies(p)
@@ -57,39 +66,60 @@ export function LifePage() {
   const customResult = useMemo(() => (base ? base.sim.simulate(custom) : null), [base, custom])
 
   // 前提や回答が変わったら、探索済みの最適プランは古くなる
+  const baseRef = useRef(base)
+  baseRef.current = base
   useEffect(() => {
     setBest(null)
+    setSelected((s) => s.filter((id) => id !== 'best'))
   }, [base])
 
-  if (!base || !customResult) return <Loading label="人生計画を年ごとにシミュレーションしています…" />
-  const { sim, results, uRef } = base
+  const runSearch = async () => {
+    if (!base) return
+    const token = base
+    setSearching(0)
+    const startPolicy: LifePolicy = {
+      ...base.results[1].policy,
+      id: 'best',
+      name: 'おすすめ（最適化）',
+      description: '年代ごとの労働時間と引退年齢を、生涯の満足度が最大になるよう探索したプラン',
+    }
+    const r = await base.sim.optimizeAsync(startPolicy, { onProgress: (f) => setSearching(f) })
+    setSearching(null)
+    // 探索中に前提や回答が変わっていたら、その結果は使わない
+    if (baseRef.current !== token) return
+    setBest(r)
+    setSelected((s) => (s.includes('best') ? s : [...s.slice(0, MAX_PLOTTED - 1), 'best']))
+    setDetail('best')
+  }
+
+  const setA = (patch: Partial<LifeAssumptions>) => setALocal((a) => ({ ...a, ...patch }))
+
+  if (!base || !customResult)
+    return (
+      <>
+        <Loading label="人生計画を年ごとにシミュレーションしています…" />
+        <AssumptionsForm A={aLocal} setA={setA} disabled={false} />
+      </>
+    )
+  const { results, uRef } = base
   const all: LifeResult[] = [...results, customResult, ...(best ? [{ ...best, policy: { ...best.policy, id: 'best', name: 'おすすめ（最適化）' } }] : [])]
   const byId = new Map(all.map((r) => [r.policy.id, r]))
   const shown = selected.filter((id) => byId.has(id)).slice(0, MAX_PLOTTED)
   const toLs = (u: number) => p.lifeSatisfaction + (u - uRef)
   const detailRes = byId.get(detail) ?? results[1]
-
-  const runSearch = async () => {
-    setSearching(0)
-    const startPolicy: LifePolicy = { ...results[1].policy, id: 'best', name: 'おすすめ（最適化）', description: '労働時間と引退年齢を、生涯の満足度が最大になるよう探索したプラン' }
-    const r = await sim.optimizeAsync(startPolicy, { onProgress: (f) => setSearching(f) })
-    setBest(r)
-    setSearching(null)
-    setSelected((s) => (s.includes('best') ? s : [...s.slice(0, MAX_PLOTTED - 1), 'best']))
-    setDetail('best')
+  const toggle = (id: string) => {
+    const cur = shown
+    setSelected(cur.includes(id) ? cur.filter((x) => x !== id) : cur.length >= MAX_PLOTTED ? [...cur.slice(1), id] : [...cur, id])
   }
-
-  const toggle = (id: string) =>
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : s.length >= MAX_PLOTTED ? [...s.slice(1), id] : [...s, id]))
-
-  const setA = (patch: Partial<LifeAssumptions>) => setAssumptions({ ...A, ...patch })
 
   return (
     <>
       <section className="section" aria-labelledby="l-title">
         <div className="section-head">
           <h2 id="l-title">人生計画のシミュレーション</h2>
-          <span className="note">{p.age}歳から100歳まで、1年ごとに収入・年金・教育費・家族の時間を計算し、毎年いくら使うかを最適化</span>
+          <span className="note">
+            {p.age}歳から100歳まで、1年ごとに収入・年金・教育費・家族の時間を計算し、毎年いくら使うかを最適化{pending && '（更新中…）'}
+          </span>
         </div>
         <div className="sheet section">
           <div className="row" style={{ justifyContent: 'space-between' }}>
@@ -183,24 +213,7 @@ export function LifePage() {
         <CustomEditor policy={custom} onChange={setCustomPolicy} />
       </section>
 
-      <section className="section" aria-labelledby="a-title">
-        <h2 id="a-title">前提条件</h2>
-        <div className="sheet form-grid">
-          <RangeField id="a-ret" label="運用利回り（物価上昇を除いた実質）" value={A.realReturn * 100} min={-1} max={5} step={0.5} onChange={(v) => setA({ realReturn: v / 100 })} format={(v) => `${v.toFixed(1)}%`} hint="預金中心なら0%前後、株式中心の分散投資なら2〜4%が目安" />
-          <RangeField id="a-wage" label="賃金の上昇（年齢による昇給とは別）" value={A.realWageGrowth * 100} min={0} max={2} step={0.25} onChange={(v) => setA({ realWageGrowth: v / 100 })} format={(v) => `${v.toFixed(2)}%/年`} hint="財政検証の想定は0.5〜1.5%" />
-          <RangeField id="a-steep" label="年功カーブの急さ" value={A.careerSteepness} min={0} max={1.5} step={0.1} onChange={(v) => setA({ careerSteepness: v })} format={(v) => (v === 1 ? '統計どおり' : `${v.toFixed(1)}倍`)} hint="0なら年齢で給料が変わらない" />
-          <RangeField id="a-pen" label="将来の年金の水準" value={A.pensionFactor * 100} min={60} max={100} step={5} onChange={(v) => setA({ pensionFactor: v / 100 })} format={(v) => `今の${v}%`} hint="財政検証の悲観〜楽観で70〜95%程度" />
-          <RangeField id="a-disc" label="将来の幸せをどれだけ割り引くか" value={A.discount * 100} min={0} max={3} step={0.5} onChange={(v) => setA({ discount: v / 100 })} format={(v) => `${v.toFixed(1)}%/年`} hint="0%なら今の幸せも将来の幸せも同じ重さ" />
-          <div className="field">
-            <label htmlFor="a-bonus">退職金（手取り）</label>
-            <div className="with-unit">
-              <input id="a-bonus" type="number" value={A.retirementBonus / 10_000} step={100} min={0} onChange={(e) => setA({ retirementBonus: Math.max(0, parseFloat(e.target.value) || 0) * 10_000 })} />
-              <span>万円</span>
-            </div>
-            <span className="hint">大企業の勤続が長い大卒で平均約1,900万円、転職が多ければ0</span>
-          </div>
-        </div>
-      </section>
+      <AssumptionsForm A={aLocal} setA={setA} disabled={searching !== null} />
 
       <section className="section" aria-labelledby="d-title">
         <div className="section-head">
@@ -255,12 +268,14 @@ function CustomEditor({ policy, onChange }: { policy: LifePolicy; onChange: (p: 
     <div className="sheet section">
       <div className="form-grid">
         {policy.stages.map((st, i) => {
-          const until = policy.stages[i + 1]?.from ?? policy.retireAge
+          // 引退後に始まる区切りは使われないので出さない
+          if (st.from >= policy.retireAge) return null
+          const until = Math.min(policy.stages[i + 1]?.from ?? Infinity, policy.retireAge) - 1
           return (
             <RangeField
               key={st.from}
               id={`c-stage-${i}`}
-              label={`${st.from}〜${Math.max(st.from, until - 1)}歳の労働時間`}
+              label={until > st.from ? `${st.from}〜${until}歳の労働時間` : `${st.from}歳の労働時間`}
               value={st.hours}
               min={10}
               max={65}
@@ -270,7 +285,16 @@ function CustomEditor({ policy, onChange }: { policy: LifePolicy; onChange: (p: 
             />
           )
         })}
-        <RangeField id="c-retire" label="引退する年齢" value={policy.retireAge} min={Math.max(p.age + 1, 40)} max={80} step={1} onChange={(v) => set({ retireAge: v })} format={(v) => `${v}歳`} />
+        <RangeField
+          id="c-retire"
+          label="引退する年齢"
+          value={policy.retireAge}
+          min={p.age + 1}
+          max={Math.max(80, p.age + 2)}
+          step={1}
+          onChange={(v) => set({ retireAge: v })}
+          format={(v) => `${v}歳`}
+        />
         {p.jobs.length > 1 && (
           <div className="field">
             <label htmlFor="c-job">仕事</label>
@@ -294,5 +318,31 @@ function CustomEditor({ policy, onChange }: { policy: LifePolicy; onChange: (p: 
         />
       </div>
     </div>
+  )
+}
+
+function AssumptionsForm({ A, setA, disabled }: { A: LifeAssumptions; setA: (p: Partial<LifeAssumptions>) => void; disabled: boolean }) {
+  return (
+    <section className="section" aria-labelledby="a-title">
+      <h2 id="a-title">前提条件</h2>
+      <fieldset className="sheet form-grid" disabled={disabled}>
+        <RangeField id="a-ret" label="運用利回り（物価上昇を除いた実質）" value={A.realReturn * 100} min={-1} max={5} step={0.5} onChange={(v) => setA({ realReturn: v / 100 })} format={(v) => `${v.toFixed(1)}%`} hint="預金中心なら0%前後、株式中心の分散投資なら2〜4%が目安" />
+        <RangeField id="a-wage" label="賃金の上昇（年齢による昇給とは別）" value={A.realWageGrowth * 100} min={0} max={2} step={0.25} onChange={(v) => setA({ realWageGrowth: v / 100 })} format={(v) => `${v.toFixed(2)}%/年`} hint="財政検証の想定は0.5〜1.5%" />
+        <RangeField id="a-steep" label="年功カーブの急さ" value={A.careerSteepness} min={0} max={1.5} step={0.1} onChange={(v) => setA({ careerSteepness: v })} format={(v) => (Math.abs(v - 1) < 1e-9 ? '統計どおり' : `${v.toFixed(1)}倍`)} hint="0なら年齢で給料が変わらない" />
+        <RangeField id="a-pen" label="将来の年金の水準" value={A.pensionFactor * 100} min={60} max={100} step={5} onChange={(v) => setA({ pensionFactor: v / 100 })} format={(v) => `今の${v}%`} hint="財政検証の悲観〜楽観で70〜95%程度" />
+        <RangeField id="a-disc" label="将来の幸せをどれだけ割り引くか" value={A.discount * 100} min={0} max={3} step={0.5} onChange={(v) => setA({ discount: v / 100 })} format={(v) => `${v.toFixed(1)}%/年`} hint="0%なら今の幸せも将来の幸せも同じ重さ" />
+        <NumberField
+          id="a-bonus"
+          label="退職金（手取り）"
+          value={A.retirementBonus / 10_000}
+          unit="万円"
+          step={100}
+          min={0}
+          max={10_000}
+          onChange={(v) => setA({ retirementBonus: Math.max(0, v) * 10_000 })}
+          hint="大企業の勤続が長い大卒で平均約1,900万円、転職が多ければ0"
+        />
+      </fieldset>
+    </section>
   )
 }

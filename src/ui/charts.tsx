@@ -140,9 +140,14 @@ export function LineChart(props: LineChartProps) {
   const iw = Math.max(50, width - pad.l - pad.r)
   const ih = height - pad.t - pad.b
 
-  const all = series.flatMap((s) => s.points)
+  const all = series.flatMap((s) => s.points).filter((pt) => Number.isFinite(pt.x) && Number.isFinite(pt.y) && (!xLog || pt.x > 0))
   const xs = all.map((p) => p.x)
-  const ys = [...all.map((p) => p.y), ...series.flatMap((s) => (s.band ?? []).flatMap((b) => [b.lo, b.hi])), ...markers.map((m) => m.y)]
+  const ok = (pt: { x: number; y: number }) => Number.isFinite(pt.x) && Number.isFinite(pt.y) && (!xLog || pt.x > 0)
+  const ys = [
+    ...all.map((p) => p.y),
+    ...series.flatMap((s) => (s.band ?? []).flatMap((b) => [b.lo, b.hi])).filter(Number.isFinite),
+    ...markers.filter(ok).map((m) => m.y),
+  ]
   const xMin = props.xDomain?.[0] ?? Math.min(...xs)
   const xMax = props.xDomain?.[1] ?? Math.max(...xs)
   let yMin = props.yDomain?.[0] ?? Math.min(...ys)
@@ -201,6 +206,13 @@ export function LineChart(props: LineChartProps) {
     setTip({ x: fx(x), y: (e.clientY - rect.top) * scale, title: props.tipTitle(x), rows })
   }
 
+  if (all.length === 0)
+    return (
+      <div className="chart" ref={ref}>
+        <p className="note">表示するデータがありません（比べるプランを選んでください）。</p>
+      </div>
+    )
+
   return (
     <div className="chart" ref={ref}>
       {series.length >= 2 && (
@@ -256,14 +268,14 @@ export function LineChart(props: LineChartProps) {
         {series.map((s) =>
           s.dotsOnly ? (
             <g key={s.id}>
-              {s.points.map((p, i) => (
+              {s.points.filter(ok).map((p, i) => (
                 <circle key={i} cx={fx(p.x)} cy={fy(p.y)} r={4.5} fill={s.color} stroke="var(--surface)" strokeWidth={2} />
               ))}
             </g>
           ) : (
             <path
               key={s.id}
-              d={s.points.map((p, i) => `${i ? 'L' : 'M'}${fx(p.x)},${fy(p.y)}`).join('')}
+              d={s.points.filter(ok).map((p, i) => `${i ? 'L' : 'M'}${fx(p.x)},${fy(p.y)}`).join('')}
               fill="none"
               stroke={s.color}
               strokeWidth={s.thin ? 1.5 : 2}
@@ -278,7 +290,7 @@ export function LineChart(props: LineChartProps) {
               {s.name}
             </text>
           ))}
-        {markers.map((m, i) => (
+        {markers.filter((m) => Number.isFinite(m.x) && Number.isFinite(m.y) && (!xLog || m.x > 0)).map((m, i) => (
           <g key={i}>
             <circle cx={fx(m.x)} cy={fy(m.y)} r={5} fill={m.color ?? 'var(--ink)'} stroke="var(--surface)" strokeWidth={2} />
             <text x={fx(m.x)} y={fy(m.y) - 10} textAnchor="middle" className="label-strong">
@@ -294,7 +306,10 @@ export function LineChart(props: LineChartProps) {
           height={ih}
           fill="transparent"
           onPointerMove={onMove}
-          onPointerLeave={() => {
+          onPointerDown={onMove}
+          onPointerLeave={(e) => {
+            // タッチでは指を離した後もツールチップを残す（次にタップした位置で更新）
+            if (e.pointerType === 'touch') return
             setTip(null)
             setHx(null)
           }}
@@ -315,8 +330,8 @@ export interface WeekSegment {
   label: string
   hours: number
   color: string
-  /** 明るい色の上は黒い文字 */
-  darkText?: boolean
+  /** 塗りの上の文字色（テーマごとに読みやすい色のトークン） */
+  textColor: string
 }
 
 export function WeekBars({ rows }: { rows: { who: string; segments: WeekSegment[] }[] }) {
@@ -340,8 +355,8 @@ export function WeekBars({ rows }: { rows: { who: string; segments: WeekSegment[
                   return (
                     <div
                       key={s.key}
-                      className={'seg-h' + (s.darkText ? ' dark-text' : '')}
-                      style={{ flex: `${s.hours} 1 0`, background: s.color }}
+                      className="seg-h"
+                      style={{ flex: `${s.hours} 1 0`, background: s.color, color: s.textColor }}
                       onPointerMove={(e) => {
                         const rect = (ref.current as HTMLDivElement).getBoundingClientRect()
                         setTip({
@@ -425,24 +440,28 @@ function BarLine({ value, max, color, text }: { value: number; max: number; colo
   )
 }
 
-/** 計算が重い値を、画面を描いてから求める */
-export function useDeferred<T>(compute: () => T, deps: unknown[]): T | null {
-  const [value, setValue] = useState<T | null>(null)
+/**
+ * 計算が重い値を、画面を描いてから求める。
+ * 入力が変わって計算し直している間も前の結果を返し（pending=true）、画面が消えたりスクロールが飛んだりしないようにする。
+ * 短い間に続けて変わったとき（スライダーを動かしている間など）は最後の1回だけ計算する。
+ */
+export function useDeferred<T>(compute: () => T, deps: unknown[], delay = 60): { value: T | null; pending: boolean } {
+  const [state, setState] = useState<{ value: T | null; pending: boolean }>({ value: null, pending: true })
   const fn = useRef(compute)
   fn.current = compute
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const key = useMemo(() => ({}), deps)
   useEffect(() => {
     let alive = true
-    setValue(null)
+    setState((s) => (s.pending ? s : { ...s, pending: true }))
     const t = setTimeout(() => {
       if (!alive) return
-      setValue(fn.current())
-    }, 16)
+      setState({ value: fn.current(), pending: false })
+    }, delay)
     return () => {
       alive = false
       clearTimeout(t)
     }
-  }, [key])
-  return value
+  }, [key, delay])
+  return state
 }
