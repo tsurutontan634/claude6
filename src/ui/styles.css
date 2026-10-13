@@ -20,7 +20,7 @@
   --warn: #9a6400;
   --focus: #2a78d6;
 
-  --s-sleep: #2a78d6;
+  --s-sleep: #256abf; /* 白い文字が 4.5:1 以上になる濃さ */
   --s-friends: #eb6834;
   --s-family: #1baf7a;
   --s-hobby: #eda100;

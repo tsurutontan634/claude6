@@ -6,7 +6,7 @@ import { ACTIVITIES, C_REF, N_PARAMS, P_BETA, P_ETA, P_S, P_W, PARAM_DEFS, P_SEC
 import { buildTimeValueTable, timeAlloc, type TimeLimits } from './week'
 import { PRIORS } from './priors'
 import { WEEKS_PER_MONTH, consumptionFloor, householdAt, type CurrentLife } from './household'
-import { takeHome } from './tax'
+import { pensionTakeHome, takeHome } from './tax'
 import type { ParticlePosterior } from './posterior'
 
 /** 消費を月1円増やしたときの満足度の増分（点/円、粒子平均） */
@@ -117,12 +117,14 @@ export function personalityType(post: ParticlePosterior, minAnswers = 12): TypeR
   const mean = new Float64Array(p)
   for (let i = 0; i < n; i++) for (let j = 0; j < p; j++) mean[j] += w[i] * post.z[i * p + j]
   const dev = (j: number) => (mean[j] - post.mu[j]) / post.sd[j]
-  // パラメータの数が違う分野を公平に比べるため、合計を √(数) で割る（独立なら標準偏差がそろう）
-  const scores = DOMAINS.map((d) => ({
-    id: d.id,
-    label: d.label,
-    score: d.params.reduce((s, j) => s + dev(j), 0) / Math.sqrt(d.params.length),
-  }))
+  // 回答でどれだけ分かったか（learned）で重み付けし、パラメータの数が違う分野を公平に比べる：
+  //   score = Σ l_j·dev_j / √Σ l_j²（ほとんど分かっていないパラメータは分子にも分母にもほぼ効かない）
+  const learned = Array.from({ length: p }, (_, j) => post.learned(j))
+  const scores = DOMAINS.map((d) => {
+    const num = d.params.reduce((s, j) => s + learned[j] * dev(j), 0)
+    const den = Math.sqrt(d.params.reduce((s, j) => s + learned[j] * learned[j], 0))
+    return { id: d.id, label: d.label, score: den > 0.02 ? num / den : 0 }
+  })
   const best = scores.reduce((a, b) => (b.score > a.score ? b : a))
   const id = best.score < 0.35 ? 'balance' : best.id
   return { id, ...TYPES[id], scores: scores.map(({ label, score }) => ({ label, score })) }
@@ -167,14 +169,16 @@ export function moneyCurve(
 ): MoneyCurvePoint[] {
   const hh = householdAt(p, p.age)
   const sq = Math.sqrt(hh.size)
-  const net0 = takeHome(currentGrossHousehold, p.age).net
-  const consRatio = net0 > 0 ? Math.min(1.2, (currentConsumption * 12) / net0) : 0.8
+  // 給与以外の収入（年金・その他・児童手当）は年収が変わっても同じとする
+  const nonWage = (p.pensionNow > 0 ? pensionTakeHome(p.pensionNow, p.age) : 0) + Math.max(0, p.otherIncome) + hh.allowance * 12
+  const net0 = takeHome(currentGrossHousehold, p.age).net + nonWage
+  const consRatio = net0 > 0 ? (currentConsumption * 12) / net0 : 0.8
   const k = thetas.length / N_PARAMS
   const x0 = currentConsumption / sq / C_REF
   const out: MoneyCurvePoint[] = []
   const grid = incomes ?? Array.from({ length: 61 }, (_, i) => Math.exp(Math.log(100) + ((Math.log(8000) - Math.log(100)) * i) / 60))
   for (const I of grid) {
-    const C = Math.max(consumptionFloor(p.necessities), (takeHome(I * 10_000, p.age).net * consRatio) / 12)
+    const C = Math.max(consumptionFloor(p.necessities), ((takeHome(I * 10_000, p.age).net + nonWage) * consRatio) / 12)
     const x = C / sq / C_REF
     const vals: number[] = []
     for (let j = 0; j < k; j++) {

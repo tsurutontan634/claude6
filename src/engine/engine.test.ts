@@ -8,8 +8,9 @@ import { sampleProfile } from './sample'
 import { allocateSpendBonus, buildTimeValueTable, defaultLimits, expectedUtility, timeAlloc, TIME_STEP } from './week'
 import { SPEND_MU_MIN, SPEND_SCALES } from './model'
 import { LifeSimulator, presetPolicies } from './lifeplan'
-import { generateCandidates } from './questions'
-import { questionContext, currentLife } from './household'
+import { generateCandidates, questionSignature } from './questions'
+import { questionContext, currentLife, currentJob } from './household'
+import { moneyCurve } from './insights'
 import { responseProbs } from './choice'
 import type { Response } from './types'
 import { takeHome } from './tax'
@@ -231,5 +232,47 @@ describe('人生計画', () => {
     const life = currentLife(p)
     expect(life.freeHours + life.state.workHours + life.commuteHours + p.housework + p.personalCare + life.unlisted).toBeCloseTo(168, 6)
     expect(ACTIVITIES.sleep.min).toBe(35)
+  })
+})
+
+describe('レビューで見つかった不具合の再発防止', () => {
+  const th = priorDraws(150, 31)
+
+  it('労働時間カーブは今の労働時間で連続（収入が足りない人でも山ができない）', () => {
+    for (const p of [sampleProfile(), { ...sampleProfile(), monthlySaving: 200_000 }]) {
+      const wp = new WeekPlanner(p, th)
+      const job = currentJob(p)
+      const at = (h: number) => wp.plan(job, h, { samePayRate: true, keepSavingRate: true }).outcome.utility
+      const H = job.weeklyHours
+      const jumpLeft = Math.abs(at(H) - at(H - 1))
+      const jumpRight = Math.abs(at(H + 1) - at(H))
+      expect(jumpLeft).toBeLessThan(0.08)
+      expect(jumpRight).toBeLessThan(0.08)
+    }
+  })
+
+  it('今の仕事と全く同じ条件の候補は、比較で同じ点数になる', () => {
+    const p = sampleProfile()
+    const copy = { ...p.jobs[0], id: 'copy', name: 'コピー' }
+    const q = { ...p, jobs: [p.jobs[0], copy] }
+    const wp = new WeekPlanner(q, th)
+    const [a, b] = wp.compareJobs()
+    expect(wp.expected(b.fixed)).toBeCloseTo(wp.expected(a.fixed), 6)
+  })
+
+  it('お金の満足度カーブは今の年収で今の満足度を通る（年金などの収入があっても）', () => {
+    for (const p of [sampleProfile(), { ...sampleProfile(), pensionNow: 1_500_000, otherIncome: 600_000 }]) {
+      const wp = new WeekPlanner(p, th)
+      const gross = currentJob(p).annualIncome
+      const pt = moneyCurve(p, th, gross, wp.life.consumption, [gross / 10_000])[0]
+      expect(pt.ls).toBeCloseTo(p.lifeSatisfaction, 6)
+    }
+  })
+
+  it('A と B を入れ替えた質問は同じ署名になる', () => {
+    const p = sampleProfile()
+    const q = generateCandidates(questionContext(p), createRng(5), 1)[0]
+    const swapped = { ...q, a: q.b, b: q.a, textA: q.textB, textB: q.textA }
+    expect(questionSignature(swapped)).toBe(questionSignature(q))
   })
 })

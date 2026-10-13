@@ -34,21 +34,23 @@ export function WeekPage() {
     const ranges = allocationRanges(thetas, opt.freeHours + opt.outcome.freedHours, limitsFor(p))
     const curve = wp.hoursCurve(job, 10, 70, 1)
     const bestH = curve.reduce((a, b) => (b.utility > a.utility ? b : a))
+    // 「今」の点は、カーブと同じ前提（時給・貯蓄率が同じ）で今の労働時間を計算したもの
+    const nowOnCurve = wp.plan(job, job.weeklyHours, { samePayRate: true, keepSavingRate: true }).outcome.utility
     const valuesOpt = activityValues(thetas, opt.outcome.hours, opt.consumption - opt.outcome.spend.timeBuy, opt.state.householdSize)
     const bNow = meanBreakdown(thetas, wp.life.state)
     const bOpt = meanBreakdown(thetas, opt.state)
     const jobs = p.jobs.length > 1 ? wp.compareJobs() : null
-    return { wp, job, opt, uNow, uOpt, ranges, curve, bestH, valuesOpt, bNow, bOpt, jobs }
+    return { wp, job, opt, uNow, uOpt, ranges, curve, bestH, nowOnCurve, valuesOpt, bNow, bOpt, jobs }
   }, [rev, p])
 
   if (!res) return <Loading label="あなたの効用関数で、最適な1週間を計算しています…" />
-  const { wp, job, opt, uNow, uOpt, ranges, curve, bestH, valuesOpt, bNow, bOpt, jobs } = res
+  const { wp, job, opt, uNow, uOpt, ranges, curve, bestH, nowOnCurve, valuesOpt, bNow, bOpt, jobs } = res
+  const working = job.weeklyHours > 0 && job.annualIncome > 0
   const gain = uOpt - uNow
   const life = wp.life
   const choresNow = p.housework + p.personalCare + life.household.childcareMine + p.otherDuties + life.caregiving + life.unlisted
   const choresOpt = Math.max(0, opt.housework - opt.outcome.freedHours) + p.personalCare + life.household.childcareMine + p.otherDuties + life.caregiving + life.unlisted
-  // 労働時間カーブ（時給が同じ前提）の「今」の点
-  const curveNow = curve.reduce((a, b) => (Math.abs(b.hours - job.weeklyHours) < Math.abs(a.hours - job.weeklyHours) ? b : a))
+
   const changes = ACTIVITY_KEYS.map((k) => ({ k, d: opt.outcome.hours[k] - p.currentHours[k] }))
     .filter((c) => Math.abs(c.d) >= 1)
     .sort((a, b) => Math.abs(b.d) - Math.abs(a.d))
@@ -179,42 +181,52 @@ export function WeekPage() {
           <h2 id="h-title">働く時間を変えられたら？</h2>
           <span className="note">
             時給は同じ・貯蓄率（手取りのうち貯蓄に回す割合）も同じと仮定。
-            {!job.hoursFlexible && `今の仕事は時間を調整できない設定なので、あくまで仮定の話です（実際にパートに移ると時給は約${Math.round(PRIORS.work.partTimeWageRatio * 100)}%になりがちで、人生計画ではそれを反映しています）。`}
+            {!job.overtimePaid && '残業代が出ない設定なので、週40時間を超えても収入は増えない前提です。'}
+            {!job.hoursFlexible &&
+              (job.weeklyHours >= 35
+                ? `今の仕事は時間を調整できない設定なので、あくまで仮定の話です（実際にフルタイムからパートに移ると時給は約${Math.round(PRIORS.work.partTimeWageRatio * 100)}%になりがちで、人生計画ではそれを反映しています）。`
+                : '今の仕事は時間を調整できない設定なので、あくまで仮定の話です。')}
           </span>
         </div>
-        <div className="sheet section">
-          <p>
-            あなたにとって満足度が最も高い労働時間は<strong>週{bestH.hours}時間</strong>
-            （今は週{trimNum(job.weeklyHours)}時間、差は{deltaText(bestH.utility - curveNow.utility)}）。
-            {Math.abs(bestH.hours - job.weeklyHours) <= 3 ? '今の働き方は、あなたにとってほぼちょうど良い長さです。' : bestH.hours < job.weeklyHours ? '収入が減っても、時間を取るほうが満足度は上がる推定です。' : '時間を少し削っても、収入を増やすほうが満足度は上がる推定です。'}
-          </p>
-          <LineChart
-            ariaLabel="週の労働時間ごとの満足度の推定"
-            series={[
-              {
-                id: 'u',
-                name: '満足度の変化',
-                color: 'var(--s-sleep)',
-                points: curve.map((c) => ({ x: c.hours, y: p.lifeSatisfaction + (c.utility - uNow) })),
-              },
-            ]}
-            markers={[
-              ...(Math.abs(curveNow.hours - job.weeklyHours) < 0.5
-                ? [{ x: curveNow.hours, y: p.lifeSatisfaction + (curveNow.utility - uNow), label: '今', color: 'var(--ink)' }]
-                : []),
-              { x: bestH.hours, y: p.lifeSatisfaction + (bestH.utility - uNow), label: '最適', color: 'var(--accent)' },
-            ]}
-            xFormat={(v) => `${v}h`}
-            yFormat={(v) => v.toFixed(1)}
-            yLabel="満足度（点）"
-            tipTitle={(x) => `週${x}時間働く`}
-            tipValue={(_s, y) => `${y.toFixed(2)}点`}
-          />
-          <p className="note">
-            週{curve[0].hours}時間：世帯の手取り月{manYen(curve[0].netMonthly)}／週40時間：月{manYen(curve.find((c) => c.hours === 40)?.netMonthly ?? 0)}／週60時間：月
-            {manYen(curve.find((c) => c.hours === 60)?.netMonthly ?? 0)}。週{OVERWORK_FROM}時間を超えると長時間労働のつらさが2乗で効いてきます。
-          </p>
-        </div>
+        {working ? (
+          <div className="sheet section">
+            <p>
+              あなたにとって満足度が最も高い労働時間は<strong>週{bestH.hours}時間</strong>
+              （今は週{trimNum(job.weeklyHours)}時間、差は{deltaText(bestH.utility - nowOnCurve)}）。
+              {Math.abs(bestH.hours - job.weeklyHours) <= 3
+                ? '今の働き方は、あなたにとってほぼちょうど良い長さです。'
+                : bestH.hours < job.weeklyHours
+                  ? '収入が減っても、時間を取るほうが満足度は上がる推定です。'
+                  : '時間を少し削っても、収入を増やすほうが満足度は上がる推定です。'}
+            </p>
+            <LineChart
+              ariaLabel="週の労働時間ごとの満足度の推定"
+              series={[
+                {
+                  id: 'u',
+                  name: '満足度の変化',
+                  color: 'var(--s-sleep)',
+                  points: curve.map((c) => ({ x: c.hours, y: p.lifeSatisfaction + (c.utility - nowOnCurve) })),
+                },
+              ]}
+              markers={[
+                ...(job.weeklyHours >= 10 && job.weeklyHours <= 70 ? [{ x: job.weeklyHours, y: p.lifeSatisfaction, label: '今', color: 'var(--ink)' }] : []),
+                { x: bestH.hours, y: p.lifeSatisfaction + (bestH.utility - nowOnCurve), label: '最適', color: 'var(--accent)' },
+              ]}
+              xFormat={(v) => `${v}h`}
+              yFormat={(v) => v.toFixed(1)}
+              yLabel="満足度（点）"
+              tipTitle={(x) => `週${x}時間働く`}
+              tipValue={(_s, y) => `${y.toFixed(2)}点`}
+            />
+            <p className="note">
+              週{curve[0].hours}時間：世帯の手取り月{manYen(curve[0].netMonthly)}／週40時間：月{manYen(curve.find((c) => c.hours === 40)?.netMonthly ?? 0)}／週60時間：月
+              {manYen(curve.find((c) => c.hours === 60)?.netMonthly ?? 0)}。週{OVERWORK_FROM}時間を超えると長時間労働のつらさが2乗で効いてきます。
+            </p>
+          </div>
+        ) : (
+          <p className="note">今は働いていない（または収入がない）設定なので、労働時間の比較は省略しています。働き方を考えるときは、プロフィールの「転職先などの候補」に仕事を追加すると比べられます。</p>
+        )}
         {jobs && (
           <div className="sheet table-wrap">
             <table className="wide">

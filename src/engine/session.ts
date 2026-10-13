@@ -11,7 +11,6 @@ import { selectQuestion, predictiveDistribution } from './design'
 import {
   commuteAtHours,
   currentJob,
-  consumptionFloor,
   currentLife,
   grossAtHours,
   hasFamilyAt,
@@ -269,14 +268,13 @@ export class WeekPlanner {
     const hh = householdAt(p, p.age)
     const commute = h > 0 ? commuteAtHours(job, h) : 0
     const netMonthly = householdNetAnnual(p, grossAtHours(job, h, opts.samePayRate ?? false)) / 12 + hh.allowance
-    const isNow = job.id === currentJob(p).id && Math.abs(h - currentJob(p).weeklyHours) < 1e-9
-    // 働き方を変える仮定では、貯蓄「額」ではなく貯蓄「率」を今と同じにする（収入が減れば貯蓄も減る）
-    const monthlySaving = opts.keepSavingRate && !isNow ? Math.max(0, netMonthly - hh.education / 12) * this.savingRate : p.monthlySaving
-    const raw = netMonthly - monthlySaving - hh.education / 12
-    const floor = consumptionFloor(p.necessities)
-    const drawingDown = raw < floor
-    // 生活費の下限（貯金の取り崩し）は、今の実際の暮らしにだけ当てはめる
-    const consumption = isNow ? Math.max(floor, raw) : Math.max(5_000, raw)
+    // 消費は「今の実際の消費」を基準に、手取りの増減ぶんだけ動かす（今の点で連続になり、比較がぶれない）。
+    // 働き方を変える仮定では貯蓄「率」を今と同じにし（増減の (1 − 貯蓄率) を消費に回す）、
+    // そうでなければ貯蓄「額」を今と同じにする（増減はすべて消費に回る）
+    const dNet = netMonthly - life.netMonthly
+    const monthlySaving = opts.keepSavingRate ? p.monthlySaving + dNet * this.savingRate : p.monthlySaving
+    const consumption = Math.max(5_000, life.consumption + dNet * (opts.keepSavingRate ? 1 - this.savingRate : 1))
+    const drawingDown = life.drawingDown && consumption <= life.consumption + 1
     // 家事は「外注する前の時間」から始め、時間を買うかどうかも最適化する
     const housework = life.grossHousework
     const free = 168 - h - commute - housework - p.personalCare - hh.childcareMine - p.otherDuties - life.caregiving - life.unlisted

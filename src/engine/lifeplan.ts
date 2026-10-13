@@ -112,8 +112,10 @@ export interface LifeResult {
   score: number
   assetsAtRetire: number
   minAssets: number
-  /** 資金が尽きて生活費を切り詰めた年数 */
+  /** 資金が尽きた年数 */
   shortfallYears: number
+  /** 消費が必需的支出を下回った年数（資金が尽きた年を含む） */
+  belowNeedYears: number
 }
 
 interface YearInputs {
@@ -186,7 +188,7 @@ export function lifeEvents(p: Profile, policy: LifePolicy, age: number, hh: Hous
  * これがあると、長生きしたときに生活費が足りなくならないよう先を見越して備える。
  */
 export const NEED_PENALTY = 1.0
-function needPenalty(C: number, necessities: number): number {
+export function needPenalty(C: number, necessities: number): number {
   return C < necessities ? NEED_PENALTY * Math.log(necessities / Math.max(1, C)) : 0
 }
 
@@ -283,7 +285,9 @@ export class LifeSimulator {
       const hours = stageHours(policy, age)
       const commute = hours > 0 ? commuteAtHours(job, hours) : 0
       const gross = hours > 0 ? grossAtHours(job, hours) * wageMultiplier(p.age, age, p.sex, A.realWageGrowth, A.careerSteepness) : 0
-      if (hours > 0 && age < 70) {
+      // 厚生年金に入るのは年収106万円以上（簡略化）。70歳まで
+      const employee = gross >= 1_060_000
+      if (employee && age < 70) {
         pensionYears++
         pensionGrossSum += Math.min(JP_RULES.pensionCap, gross)
       }
@@ -292,7 +296,7 @@ export class LifeSimulator {
         excessSum += longHoursExcessHazard(hours)
       }
       // 受給開始の年から（受給中に働いて厚生年金に入っていれば、毎年計算し直す：在職定時改定）
-      if (p.pensionNow <= 0 && age >= pensionStart && (age === pensionStart || (hours > 0 && age < 70))) {
+      if (p.pensionNow <= 0 && age >= pensionStart && (age === pensionStart || (employee && age < 70))) {
         const avg = pensionYears > 0 ? pensionGrossSum / pensionYears : 0
         ownPension = publicPension(avg, pensionYears, 40, p.pensionAge) * A.pensionFactor
       }
@@ -309,9 +313,9 @@ export class LifeSimulator {
       }
       income += hh.allowance * 12
       if (age === policy.retireAge) income += A.retirementBonus
-      // 60歳未満で働いていない年は国民年金・国民健康保険の保険料がかかる
+      // 60歳未満で会社の社会保険に入っていない年（働いていない・年収106万円未満）は国民年金・国民健康保険の保険料がかかる
       // （会社員のパートナーの扶養に入れる場合はかからない：第3号被保険者）
-      if (hours === 0 && age < 60 && !(partnerEmployed && p.partnerIncome >= 1_060_000)) income -= 300_000
+      if (!employee && age < 60 && !(partnerEmployed && p.partnerIncome >= 1_060_000)) income -= 300_000
       const free = 168 - hours - commute - housework - p.personalCare - hh.childcareMine - p.otherDuties - caregivingHours(p, age) - unlisted
       const { kit } = this.kitFor(age)
       out.push({
@@ -488,6 +492,7 @@ export class LifeSimulator {
     let assetsAtRetire = NaN
     let minAssets = Infinity
     let shortfallYears = 0
+    let belowNeedYears = 0
     const currentRate = this.currentSavingRate()
     for (let t = 0; t < T; t++) {
       const y = ys[t]
@@ -495,9 +500,11 @@ export class LifeSimulator {
       let next: number
       let deficit = 0
       if (policy.saving === 'current' && y.age < policy.retireAge) {
-        // 引退までは今の貯蓄率のまま（働いていない年も含む）
+        // 引退までは今の貯蓄率のまま（働いていない年も含む）。
+        // それで必需的支出に届かない年は、残りの年数で均等に取り崩すくらいまで貯金を使う
         const avail = y.income - y.education
         C = Math.max(consumptionFloor(y.necessities), (avail * (1 - currentRate)) / 12)
+        if (C < y.necessities && assets > 0) C = Math.min(y.necessities, C + assets / 12 / Math.max(1, T - t))
         const cash = assets + avail - 12 * C
         if (cash < 0) {
           deficit = -cash
@@ -509,8 +516,8 @@ export class LifeSimulator {
         next = c.next
         if (c.short) deficit = 12 * C - (assets + y.income - y.education)
       }
-      // 必需的支出をまかなえない年（資金が尽きた年を含む）
-      if (deficit > 0 || C < y.necessities * 0.98) shortfallYears++
+      if (deficit > 0) shortfallYears++
+      if (deficit > 0 || C < y.necessities * 0.98) belowNeedYears++
       const w = this.yearUtility(y, C, assets, true)
       const u = w.utility + y.event - shortfallPenalty(deficit) - needPenalty(C, y.necessities)
       const weight = Math.pow(delta, t) * y.surv
@@ -543,7 +550,7 @@ export class LifeSimulator {
       assets = next
     }
     if (Number.isNaN(assetsAtRetire)) assetsAtRetire = assets
-    return { policy, years, score: num / den, assetsAtRetire, minAssets, shortfallYears }
+    return { policy, years, score: num / den, assetsAtRetire, minAssets, shortfallYears, belowNeedYears }
   }
 
   /** 今の貯蓄率（手取り − 教育費 に対する割合） */
@@ -588,6 +595,8 @@ export class LifeSimulator {
     for (let s = 0; s < sweeps; s++) {
       let improved = false
       for (let si = 0; si < policy.stages.length; si++) {
+        // 引退後に始まる区切りは結果に影響しないので探さない
+        if (policy.stages[si].from >= policy.retireAge) continue
         for (const h of hoursChoices) {
           step++
           if (policy.stages[si].hours === h) continue
@@ -633,7 +642,9 @@ export function defaultStages(age: number, hours: number, retireAge = 65): Stage
   return cuts.map((from) => ({ from, hours }))
 }
 
-function describeStages(stages: Stage[], retireAge: number): string {
+function describeStages(stagesIn: Stage[], retireAge: number): string {
+  // 同じ労働時間が続く区切りはまとめ、引退後の区切りは書かない
+  const stages = stagesIn.filter((s, i) => s.from < retireAge && (i === 0 || s.hours !== stagesIn[i - 1].hours))
   const parts = stages.map((s, i) => {
     const until = Math.min(stages[i + 1]?.from ?? retireAge, retireAge) - 1
     return until > s.from ? `${s.from}〜${until}歳は週${s.hours}時間` : `${s.from}歳は週${s.hours}時間`
@@ -658,8 +669,9 @@ export function presetPolicies(p: Profile): LifePolicy[] {
   if (H > 0) {
     const relaxedH = Math.min(H, 35)
     const relaxedR = Math.max(R, 70)
-    if (relaxedH !== H || relaxedR !== R) out.push(mk('relaxed', 'ゆとり型', '短めの時間で長く働く', [relaxedH], relaxedR, 'optimal'))
-    out.push(mk('hustle', '前半がんばる型', '若いうちに長く働き、だんだん減らす', [Math.max(H, 50), 40, 35], R, 'optimal'))
+    if ((relaxedH !== H || relaxedR !== R) && relaxedR >= p.age + 3) out.push(mk('relaxed', 'ゆとり型', '短めの時間で長く働く', [relaxedH], relaxedR, 'optimal'))
+    // 「だんだん減らす」には2段階以上の区切りが必要
+    if (defaultStages(p.age, H, R).length >= 2) out.push(mk('hustle', '前半がんばる型', '若いうちに長く働き、だんだん減らす', [Math.max(H, 50), 40, 35], R, 'optimal'))
     if (p.age < 48) out.push(mk('fire', '早期リタイア型', '長く働いて早く引退する', [Math.max(H, 50)], 50, 'optimal'))
   }
   return out

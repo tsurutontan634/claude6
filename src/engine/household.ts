@@ -38,7 +38,7 @@ export function grossAtHours(job: JobOption, h: number, samePayRate = false): nu
 /** 週の出社日数 */
 export function workDaysAtHours(job: JobOption, h: number): number {
   if (h <= 0 || job.workDays <= 0) return 0
-  const perDay = job.weeklyHours / Math.max(1, job.workDays)
+  const perDay = (job.weeklyHours > 0 ? job.weeklyHours : 40) / Math.max(1, job.workDays)
   return Math.min(7, Math.max(1, Math.round(h / Math.max(4, perDay))))
 }
 
@@ -144,8 +144,9 @@ export function consumptionFloor(necessities: number): number {
 export function boughtHousework(p: Profile, timeBuyMonthly: number): number {
   const bought = timeBuyMonthly / WEEKS_PER_MONTH / PRIORS.spend.timeBuyYenPerHour
   // 外注しているぶんを足し戻した「もとの家事時間」の maxShare までしか外注できない
-  const gross = p.housework + bought
-  return Math.min(bought, gross * PRIORS.spend.timeBuyMaxShare)
+  // （bought ≤ maxShare·(家事 + bought) ⇔ bought ≤ 家事·maxShare/(1 − maxShare)）
+  const m = PRIORS.spend.timeBuyMaxShare
+  return Math.min(bought, (p.housework * m) / (1 - m))
 }
 
 /** 活動時間の上限・下限（プロフィールに応じて家族の時間の上限を変える） */

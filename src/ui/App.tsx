@@ -37,11 +37,11 @@ interface AppState {
   setDraft: (p: Profile | null) => void
   go: (t: Tab) => void
   answer: (q: Question, r: Response) => void
-  undo: () => Promise<void>
-  setProfile: (p: Profile) => Promise<void>
+  undo: () => Promise<boolean>
+  setProfile: (p: Profile) => Promise<boolean>
   setAssumptions: (a: LifeAssumptions) => void
   setCustomPolicy: (p: LifePolicy | null) => void
-  replaceAll: (s: Saved) => Promise<void>
+  replaceAll: (s: Saved) => Promise<boolean>
   toast: (msg: string) => void
 }
 
@@ -88,21 +88,40 @@ export function App() {
     if (cachePosterior) savePosterior(signature(next), sessionRef.current!.posterior.serialize())
   }, [])
 
-  /** 時間のかかる処理を、操作を止めた状態で実行する（失敗しても必ず元に戻す） */
+  /**
+   * 時間のかかる処理を、操作を止めた状態で実行する。
+   * 失敗したら推定を保存済みの状態に戻し、false を返す（成功の知らせは呼び出し側が true のときだけ出す）。
+   * 終わったら、押したボタンにキーボードの焦点を戻す。
+   */
   const runBusy = useCallback(
-    async (label: string, fn: (progress: (f: number) => void) => Promise<void>) => {
-      if (busyRef.current) return
+    async (label: string, fn: (progress: (f: number) => void) => Promise<void>): Promise<boolean> => {
+      if (busyRef.current) return false
+      const focused = document.activeElement as HTMLElement | null
       busyRef.current = true
       setBusyState({ label, frac: 0 })
+      let ok = true
       try {
         await fn((f) => setBusyState((b) => (b ? { ...b, frac: f } : b)))
       } catch (e) {
+        ok = false
         console.error(e)
-        toast('処理に失敗しました。データ管理から書き出してやり直してください')
+        toast('処理に失敗しました。入力を見直すか、データ管理から書き出してやり直してください')
+        try {
+          const s = savedRef.current
+          sessionRef.current!.profile = s.profile
+          await sessionRef.current!.loadAnswersAsync(s.answers)
+          setRev((r) => r + 1)
+        } catch (e2) {
+          console.error(e2)
+        }
       } finally {
         busyRef.current = false
         setBusyState(null)
+        window.setTimeout(() => {
+          if (focused && focused.isConnected) focused.focus()
+        }, 0)
       }
+      return ok
     },
     [toast],
   )
@@ -240,7 +259,7 @@ export function App() {
               <button key={t.id} type="button" aria-current={tab === t.id ? 'page' : undefined} onClick={() => go(t.id)}>
                 <span>{t.label}</span>
                 {t.id === 'question' && <span className="count">{saved.answers.length}</span>}
-                {t.id === 'profile' && draft && <span className="count">未保存</span>}
+                {t.id === 'profile' && draft && JSON.stringify(draft) !== JSON.stringify(saved.profile) && <span className="count">未保存</span>}
               </button>
             ))}
           </nav>

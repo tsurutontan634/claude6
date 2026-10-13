@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useApp } from '../App'
 import type { ActivityKey, ChildPlan, JobOption, Profile } from '../../engine/types'
 import { ACTIVITY_KEYS } from '../../engine/types'
@@ -24,17 +24,36 @@ export function ProfilePage() {
   // 未保存の編集はアプリ側で持つ（ほかのページに移っても消えない）
   const d = draft ?? saved.profile
   const dirty = draft !== null && JSON.stringify(draft) !== JSON.stringify(saved.profile)
-  const set = (patch: Partial<Profile>) => setDraft({ ...d, ...patch })
-  /** 年齢を変えたら、年齢より前になってしまう予定（引退・同居・介護）を直す */
-  const setAge = (age: number) => {
+  const set = (patch: Partial<Profile>) => {
+    const next = { ...d, ...patch }
+    // 保存済みと同じに戻ったら「未保存」を消す
+    setDraft(JSON.stringify(next) === JSON.stringify(saved.profile) ? null : next)
+  }
+  // 最後に確定した年齢（入力中の途中の値ではなく）。リセットなど入力以外で年齢が変わったら追従する
+  const committedAge = useRef(d.age)
+  useEffect(() => {
+    if (document.activeElement?.id !== 'p-age') committedAge.current = d.age
+  }, [d.age])
+  /**
+   * 年齢が確定したら（欄を離れたとき）、関連する項目を直す：
+   * 今いる子どもの年齢は変えず、年齢より前になってしまう予定（引退・同居・介護・出産）は年齢の後ろに動かす。
+   */
+  const commitAge = (age: number) => {
     const a = Math.round(age)
+    const old = committedAge.current
+    committedAge.current = a
+    const shift = a - old
     set({
       age: a,
-      retireAge: Math.max(d.retireAge, a + 1),
-      partnerPlanAge: d.partnerPlanAge !== null ? Math.max(d.partnerPlanAge, a + 1) : null,
-      caregiving: d.caregiving ? { ...d.caregiving, startAge: Math.max(d.caregiving.startAge, a) } : null,
+      retireAge: Math.min(Math.max(MAX_RETIRE, a + 1), Math.max(d.retireAge, a + 1)),
+      partnerPlanAge: d.partnerPlanAge !== null ? Math.min(100, Math.max(d.partnerPlanAge, a + 1)) : null,
+      caregiving: d.caregiving ? { ...d.caregiving, startAge: Math.min(100, Math.max(d.caregiving.startAge, a)) } : null,
+      children: d.children.map((c) =>
+        c.parentAgeAtBirth <= old ? { ...c, parentAgeAtBirth: c.parentAgeAtBirth + shift } : { ...c, parentAgeAtBirth: Math.max(c.parentAgeAtBirth, a + 1) },
+      ),
     })
   }
+  const errors = validateProfile(d)
   const job = d.jobs.find((j) => j.id === d.currentJobId) ?? d.jobs[0]
   const setJob = (id: string, patch: Partial<JobOption>) => set({ jobs: d.jobs.map((j) => (j.id === id ? { ...j, ...patch } : j)) })
 
@@ -43,8 +62,8 @@ export function ProfilePage() {
   const hh = householdAt(d, d.age)
 
   const save = async () => {
-    await setProfile(d)
-    toast('プロフィールを保存して推定し直しました')
+    if (errors.length) return
+    if (await setProfile(d)) toast('プロフィールを保存して推定し直しました')
   }
 
   return (
@@ -61,11 +80,16 @@ export function ProfilePage() {
             <button type="button" className="btn ghost small" onClick={() => setDraft(sampleProfile())}>
               サンプルの値に戻す
             </button>
-            <button type="button" className="btn" onClick={() => void save()} disabled={!dirty}>
+            <button type="button" className="btn" onClick={() => void save()} disabled={!dirty || errors.length > 0}>
               保存して再計算
             </button>
           </div>
         </div>
+        {dirty && errors.length > 0 && (
+          <div className="callout" role="alert">
+            保存する前に直してください：{errors.join('／')}
+          </div>
+        )}
         <p className="lead">
           結果は「この条件のまま、時間とお金の配分をどう変えると幸せか」を計算します。正確でなくても大丈夫です。入力した値はこの端末のブラウザにだけ保存されます。
         </p>
@@ -74,7 +98,7 @@ export function ProfilePage() {
       <section className="sheet section" aria-labelledby="p-basic">
         <h3 id="p-basic">基本</h3>
         <div className="form-grid">
-          <NumberField id="p-age" label="年齢" value={d.age} min={18} max={85} integer unit="歳" onChange={setAge} />
+          <NumberField id="p-age" label="年齢" value={d.age} min={18} max={85} integer unit="歳" onChange={(v) => set({ age: Math.round(v) })} onCommit={commitAge} />
           <Seg
             label="性別（生存率と賃金カーブに使用）"
             value={d.sex}
@@ -238,7 +262,7 @@ export function ProfilePage() {
             onChange={(v) => set({ necessities: Math.max(0, v) * 10_000 })}
             hint="家賃・食費・光熱費・通信・保険・日用品など。一人暮らしで約15万円が目安"
           />
-          <NumberField id="p-retire" label="引退したい年齢" value={d.retireAge} unit="歳" min={d.age + 1} max={85} integer onChange={(v) => set({ retireAge: v })} />
+          <NumberField id="p-retire" label="引退したい年齢" value={d.retireAge} unit="歳" min={d.age + 1} max={Math.max(MAX_RETIRE, d.age + 1)} integer onChange={(v) => set({ retireAge: v })} />
           <NumberField id="p-pension" label="年金を受け取り始める年齢" value={d.pensionAge} unit="歳" min={60} max={75} integer onChange={(v) => set({ pensionAge: v })} hint="65歳が標準。遅らせると1か月0.7%増える" />
           <NumberField
             id="p-pnow"
@@ -369,7 +393,7 @@ export function ProfilePage() {
       </section>
 
       <div className="row">
-        <button type="button" className="btn" onClick={() => void save()} disabled={!dirty}>
+        <button type="button" className="btn" onClick={() => void save()} disabled={!dirty || errors.length > 0}>
           保存して再計算
         </button>
         {!dirty && (
@@ -451,9 +475,18 @@ function ChildrenEditor({ p, onChange }: { p: Profile; onChange: (c: ChildPlan[]
               onChange={(v) => update(i, { parentAgeAtBirth: v === 'now' ? p.age - 3 : p.age + 2 })}
             />
             {existing ? (
-              <NumberField id={`ch-age-${i}`} label="子どもの年齢" value={p.age - c.parentAgeAtBirth} unit="歳" onChange={(v) => update(i, { parentAgeAtBirth: p.age - Math.max(0, Math.round(v)) })} />
+              <NumberField id={`ch-age-${i}`} label="子どもの年齢" value={p.age - c.parentAgeAtBirth} unit="歳" min={0} max={30} integer onChange={(v) => update(i, { parentAgeAtBirth: p.age - Math.max(0, Math.round(v)) })} />
             ) : (
-              <NumberField id={`ch-plan-${i}`} label="生まれるときの自分の年齢" value={c.parentAgeAtBirth} unit="歳" onChange={(v) => update(i, { parentAgeAtBirth: Math.max(p.age + 1, Math.round(v)) })} />
+              <NumberField
+                id={`ch-plan-${i}`}
+                label="生まれるときの自分の年齢"
+                value={c.parentAgeAtBirth}
+                unit="歳"
+                min={p.age + 1}
+                max={Math.max(p.age + 1, Math.min(p.age + 30, 65))}
+                integer
+                onChange={(v) => update(i, { parentAgeAtBirth: Math.round(v) })}
+              />
             )}
             <Seg
               label="進学の方針"
@@ -478,4 +511,23 @@ function ChildrenEditor({ p, onChange }: { p: Profile; onChange: (c: ChildPlan[]
       </div>
     </div>
   )
+}
+
+const MAX_RETIRE = 85
+
+/** 保存前の検証（入力欄の範囲外の値や、つじつまの合わない値） */
+function validateProfile(p: Profile): string[] {
+  const e: string[] = []
+  if (!(p.age >= 18 && p.age <= 85)) e.push('年齢は18〜85歳')
+  if (!(p.retireAge > p.age && p.retireAge <= Math.max(MAX_RETIRE, p.age + 1))) e.push(`引退したい年齢は${p.age + 1}〜${Math.max(MAX_RETIRE, p.age + 1)}歳`)
+  if (!(p.pensionAge >= 60 && p.pensionAge <= 75)) e.push('年金の受給開始は60〜75歳')
+  if (p.partnerPlanAge !== null && !(p.partnerPlanAge > p.age && p.partnerPlanAge <= 100)) e.push('一緒に暮らし始める年齢は今より後')
+  if (p.caregiving && !(p.caregiving.startAge >= p.age && p.caregiving.startAge <= 100)) e.push('介護が始まる年齢は今以降')
+  for (const c of p.children) {
+    if (c.parentAgeAtBirth > p.age + 30 || p.age - c.parentAgeAtBirth > 30) e.push('子どもの年齢・予定が範囲外')
+  }
+  const job = p.jobs.find((j) => j.id === p.currentJobId) ?? p.jobs[0]
+  if (!(job.weeklyHours >= 0 && job.weeklyHours <= 100)) e.push('労働時間は0〜100時間')
+  if (!(job.workDays >= 0 && job.workDays <= 7)) e.push('出勤日数は0〜7日')
+  return [...new Set(e)]
 }

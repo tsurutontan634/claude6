@@ -138,9 +138,48 @@ export function validateSaved(obj: unknown): Saved | null {
   if (!Array.isArray(p.jobs) || p.jobs.length === 0) p.jobs = base.jobs
   if (!p.jobs.some((j) => j.id === p.currentJobId)) p.currentJobId = p.jobs[0].id
   for (const k of ACTIVITY_KEYS) if (typeof p.currentHours[k] !== 'number') p.currentHours[k] = base.currentHours[k]
+  // 数値の項目は有限の数でなければサンプルの値に戻す
+  const numKeys = ['lifeSatisfaction', 'partnerIncome', 'savings', 'monthlySaving', 'necessities', 'housework', 'personalCare', 'otherDuties', 'careShare'] as const
+  for (const k of numKeys) if (typeof p[k] !== 'number' || !Number.isFinite(p[k])) (p as unknown as Record<string, number>)[k] = base[k] as number
+  p.careShare = Math.min(1, Math.max(0, p.careShare))
+  p.lifeSatisfaction = Math.min(10, Math.max(0, p.lifeSatisfaction))
+  for (const k of ACTIVITY_KEYS) {
+    if (!Number.isFinite(p.currentHours[k]) || p.currentHours[k] < 0) p.currentHours[k] = base.currentHours[k]
+    if (!Number.isFinite(p.liking[k])) p.liking[k] = 3
+    p.liking[k] = Math.min(5, Math.max(1, Math.round(p.liking[k])))
+  }
+  for (const k of SPEND_KEYS) if (!Number.isFinite(p.spendShare[k]) || p.spendShare[k] < 0) p.spendShare[k] = base.spendShare[k]
+  p.sex = p.sex === 'male' || p.sex === 'female' ? p.sex : 'other'
+  p.hasPartner = !!p.hasPartner
+  p.daycare = p.daycare !== false
+  const bj = base.jobs[0]
+  p.jobs = p.jobs
+    .filter((j) => j && typeof j === 'object' && typeof j.id === 'string')
+    .map((j) => ({
+      id: j.id,
+      name: typeof j.name === 'string' ? j.name : '仕事',
+      annualIncome: finiteOr(j.annualIncome, bj.annualIncome, 0),
+      weeklyHours: finiteOr(j.weeklyHours, bj.weeklyHours, 0, 100),
+      workDays: Math.round(finiteOr(j.workDays, bj.workDays, 0, 7)),
+      commuteMinutesOneWay: finiteOr(j.commuteMinutesOneWay, bj.commuteMinutesOneWay, 0, 300),
+      remoteDaysPerWeek: Math.round(finiteOr(j.remoteDaysPerWeek, 0, 0, 7)),
+      enjoyment: Math.round(finiteOr(j.enjoyment, 3, 1, 5)),
+      hoursFlexible: !!j.hoursFlexible,
+      overtimePaid: j.overtimePaid !== false,
+    }))
+  if (p.jobs.length === 0) p.jobs = base.jobs
+  if (!p.jobs.some((j) => j.id === p.currentJobId)) p.currentJobId = p.jobs[0].id
+  p.children = (Array.isArray(p.children) ? p.children : [])
+    .filter((c) => c && typeof c === 'object' && Number.isFinite(c.parentAgeAtBirth))
+    .map((c) => ({ parentAgeAtBirth: Math.round(c.parentAgeAtBirth), schooling: c.schooling === 'public' || c.schooling === 'private' ? c.schooling : 'mixed' }))
+  const cg = p.caregiving
+  p.caregiving =
+    cg && typeof cg === 'object' && Number.isFinite(cg.startAge) && Number.isFinite(cg.years) && Number.isFinite(cg.hoursPerWeek)
+      ? { startAge: Math.round(cg.startAge), years: Math.max(0, Math.round(cg.years)), hoursPerWeek: Math.max(0, cg.hoursPerWeek) }
+      : null
   // 年齢に対して古くなった値を直す
   p.age = clampNum(p.age, 18, 85, base.age)
-  p.retireAge = clampNum(p.retireAge, p.age + 1, 90, Math.max(65, p.age + 1))
+  p.retireAge = clampNum(p.retireAge, p.age + 1, Math.max(85, p.age + 1), Math.max(65, p.age + 1))
   p.pensionAge = clampNum(p.pensionAge, 60, 75, 65)
   if (p.partnerPlanAge !== null && (typeof p.partnerPlanAge !== 'number' || p.partnerPlanAge <= p.age)) {
     p.hasPartner = p.hasPartner || typeof p.partnerPlanAge === 'number'
@@ -148,7 +187,7 @@ export function validateSaved(obj: unknown): Saved | null {
   }
   p.pensionNow = Number.isFinite(p.pensionNow) ? Math.max(0, p.pensionNow) : 0
   p.otherIncome = Number.isFinite(p.otherIncome) ? Math.max(0, p.otherIncome) : 0
-  if (!Array.isArray(p.children)) p.children = []
+  if (p.caregiving) p.caregiving.startAge = Math.min(100, Math.max(p.age, p.caregiving.startAge))
   // 古い形式の回答には家事時間がないので補う
   for (const a of o.answers) {
     if (a?.question?.a && typeof a.question.a.houseworkHours !== 'number') a.question.a.houseworkHours = p.housework
@@ -176,7 +215,7 @@ export function validateSaved(obj: unknown): Saved | null {
     profile: p,
     isSample: o.isSample ?? false,
     answers,
-    assumptions: { ...DEFAULT_ASSUMPTIONS, ...(o.assumptions ?? {}) },
+    assumptions: validAssumptions(o.assumptions),
     customPolicy,
     savedAt: o.savedAt ?? Date.now(),
   }
@@ -206,4 +245,22 @@ function validState(s: WeekState | undefined): boolean {
     s.consumption > 0 &&
     s.householdSize >= 1
   )
+}
+
+function finiteOr(v: unknown, fallback: number, lo = -Infinity, hi = Infinity): number {
+  return typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : fallback
+}
+
+function validAssumptions(a: unknown): Saved['assumptions'] {
+  const d = DEFAULT_ASSUMPTIONS
+  const o = (a && typeof a === 'object' ? a : {}) as Record<string, unknown>
+  return {
+    realReturn: finiteOr(o.realReturn, d.realReturn, -0.05, 0.1),
+    realWageGrowth: finiteOr(o.realWageGrowth, d.realWageGrowth, -0.05, 0.05),
+    discount: finiteOr(o.discount, d.discount, 0, 0.1),
+    pensionFactor: finiteOr(o.pensionFactor, d.pensionFactor, 0, 1.5),
+    maxAge: Math.round(finiteOr(o.maxAge, d.maxAge, 80, 110)),
+    retirementBonus: finiteOr(o.retirementBonus, d.retirementBonus, 0),
+    careerSteepness: finiteOr(o.careerSteepness, d.careerSteepness, 0, 2),
+  }
 }

@@ -338,6 +338,18 @@ export function WeekBars({ rows }: { rows: { who: string; segments: WeekSegment[
   const [ref, width] = useWidth<HTMLDivElement>()
   const [tip, setTip] = useState<TipState | null>(null)
   const barW = Math.max(100, width - 58)
+  const show = (e: React.PointerEvent<HTMLDivElement>, who: string, s: WeekSegment) => {
+    const rect = (ref.current as HTMLDivElement).getBoundingClientRect()
+    setTip({
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
+      title: `${who}：${s.label}`,
+      rows: [
+        { label: '週', value: `${s.hours.toFixed(1)}時間` },
+        { label: '1日あたり', value: `${(s.hours / 7).toFixed(1)}時間` },
+      ],
+    })
+  }
   return (
     <div className="chart" ref={ref} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
       {rows.map((row) => {
@@ -357,19 +369,12 @@ export function WeekBars({ rows }: { rows: { who: string; segments: WeekSegment[
                       key={s.key}
                       className="seg-h"
                       style={{ flex: `${s.hours} 1 0`, background: s.color, color: s.textColor }}
-                      onPointerMove={(e) => {
-                        const rect = (ref.current as HTMLDivElement).getBoundingClientRect()
-                        setTip({
-                          x: e.clientX - rect.left,
-                          y: e.clientY - rect.top,
-                          title: `${row.who}：${s.label}`,
-                          rows: [
-                            { label: '週', value: `${s.hours.toFixed(1)}時間` },
-                            { label: '1日あたり', value: `${(s.hours / 7).toFixed(1)}時間` },
-                          ],
-                        })
+                      onPointerMove={(e) => show(e, row.who, s)}
+                      onPointerDown={(e) => show(e, row.who, s)}
+                      onPointerLeave={(e) => {
+                        // タッチでは指を離した後も表示を残す（次にタップした所で更新）
+                        if (e.pointerType !== 'touch') setTip(null)
                       }}
-                      onPointerLeave={() => setTip(null)}
                     >
                       {fits ? text : ''}
                     </div>

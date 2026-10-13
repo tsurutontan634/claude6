@@ -160,7 +160,8 @@ export class ParticlePosterior {
       this.logw[i] += ll
       this.loglik[i] += ll
     }
-    if (this.ess() < n / 2) this.resampleMove(1)
+    // 回答が多いほど1回の移動が重くなるので、回数を減らして画面が止まる時間を抑える
+    if (this.ess() < n / 2) this.resampleMove(1, this.answers.length > 150 ? 2 : this.moves)
   }
 
   /**

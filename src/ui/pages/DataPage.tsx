@@ -48,10 +48,11 @@ export function DataPage() {
 
   const doImport = async () => {
     if (!parsed) return
-    await replaceAll(parsed)
-    setPasted('')
     setConfirm(null)
-    toast(`読み込みました（回答 ${parsed.answers.length}問）`)
+    if (await replaceAll(parsed)) {
+      setPasted('')
+      toast(`読み込みました（回答 ${parsed.answers.length}問）`)
+    }
   }
 
   return (
@@ -139,9 +140,9 @@ export function DataPage() {
               className="btn"
               onClick={async () => {
                 const next = confirm === 'answers' ? { ...saved, answers: [] } : freshSaved()
+                const which = confirm
                 setConfirm(null)
-                await replaceAll(next)
-                toast(confirm === 'answers' ? '回答を消しました' : 'はじめの状態に戻しました')
+                if (await replaceAll(next)) toast(which === 'answers' ? '回答を消しました' : 'はじめの状態に戻しました')
               }}
             >
               消す

@@ -29,6 +29,8 @@ export function NumberField(props: {
   hint?: ReactNode
   /** 小数を許すか（既定は許す） */
   integer?: boolean
+  /** 欄を離れて値が確定したとき（範囲に丸めた値）。関連する項目の補正はここで行う */
+  onCommit?: (v: number) => void
 }) {
   const [text, setText] = useState(fmtNum(props.value))
   const [focused, setFocused] = useState(false)
@@ -72,7 +74,8 @@ export function NumberField(props: {
             const v = parseFloat(text)
             const next = clamp(Number.isFinite(v) ? v : props.value)
             setText(fmtNum(next))
-            if (next !== props.value) props.onChange(next)
+            if (props.onCommit) props.onCommit(next)
+            else if (next !== props.value) props.onChange(next)
           }}
         />
         {props.unit && <span>{props.unit}</span>}

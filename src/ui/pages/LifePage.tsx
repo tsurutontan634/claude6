@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useApp } from '../App'
 import { DRAWS_FOR_PLAN, WeekPlanner } from '../../engine/session'
-import { LifeSimulator, defaultStages, lifeEvents, presetPolicies, type LifeAssumptions, type LifePolicy, type LifeResult } from '../../engine/lifeplan'
+import { LifeSimulator, defaultStages, lifeEvents, needPenalty, presetPolicies, type LifeAssumptions, type LifePolicy, type LifeResult } from '../../engine/lifeplan'
 import { currentJob, householdAt } from '../../engine/household'
 import { LineChart, useDeferred } from '../charts'
 import { Loading, NumberField, RangeField, Seg, deltaText, lsText, manYen } from '../common'
@@ -59,7 +59,8 @@ export function LifePage() {
     const presets = presetPolicies(p)
     const results = presets.map((pol) => sim.simulate(pol))
     const wp = new WeekPlanner(p, thetas)
-    const uRef = wp.currentUtility() + lifeEvents(p, presets[0], p.age, householdAt(p, p.age))
+    // 今の満足度の基準点：今の週の効用＋ライフイベント（人生計画と同じく、必需的支出を下回る分の不効用も含める）
+    const uRef = wp.currentUtility() + lifeEvents(p, presets[0], p.age, householdAt(p, p.age)) - needPenalty(wp.life.consumption, p.necessities)
     return { sim, results, uRef }
   }, [rev, p, A])
 
@@ -137,7 +138,13 @@ export function LifePage() {
               </label>
             ))}
           </div>
-          {!best && searching === null && <p className="note">「おすすめのプランを探す」で、年代ごとの労働時間（週20〜55時間）と引退年齢（70歳まで）を変えた数十通りを比べ、生涯の満足度が最も高いものを探します（数秒かかります）。</p>}
+          {!best && searching === null && (
+            <p className="note">
+              「おすすめのプランを探す」で、年代ごとの労働時間（週20〜55時間）
+              {p.age < 69 ? 'と引退年齢（70歳まで）' : ''}
+              を変えた数十通りを比べ、生涯の満足度が最も高いものを探します（数秒かかります）。
+            </p>
+          )}
           <LineChart
             ariaLabel="年齢ごとの満足度の推定"
             series={shown.map((id) => {
@@ -178,7 +185,8 @@ export function LifePage() {
                 <th className="num">今の貯蓄（月）</th>
                 <th className="num">引退時の資産</th>
                 <th className="num">引退</th>
-                <th className="num">資金不足の年</th>
+                <th className="num">資金が尽きた年</th>
+                <th className="num">必需的支出を下回る年</th>
               </tr>
             </thead>
             <tbody>
@@ -198,6 +206,7 @@ export function LifePage() {
                   <td className="num">{manYen(r.assetsAtRetire, 0)}</td>
                   <td className="num">{r.policy.retireAge}歳</td>
                   <td className="num">{r.shortfallYears > 0 ? <span className="down">{r.shortfallYears}年</span> : 'なし'}</td>
+                  <td className="num">{r.belowNeedYears > 0 ? <span className="down">{r.belowNeedYears}年</span> : 'なし'}</td>
                 </tr>
               ))}
             </tbody>
@@ -290,7 +299,7 @@ function CustomEditor({ policy, onChange }: { policy: LifePolicy; onChange: (p: 
           label="引退する年齢"
           value={policy.retireAge}
           min={p.age + 1}
-          max={Math.max(80, p.age + 2)}
+          max={Math.max(85, p.age + 2)}
           step={1}
           onChange={(v) => set({ retireAge: v })}
           format={(v) => `${v}歳`}
