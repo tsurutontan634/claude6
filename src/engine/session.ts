@@ -245,6 +245,12 @@ export class WeekPlanner {
     this.life = currentLife(profile)
   }
 
+  /** 今の貯蓄率（手取り − 教育費 に対する割合） */
+  get savingRate(): number {
+    const avail = this.life.netMonthly - this.life.household.education / 12
+    return avail > 0 ? Math.min(0.9, Math.max(0, this.profile.monthlySaving / avail)) : 0
+  }
+
   /** 今の生活そのものの期待効用（最適化しない） */
   currentUtility(): number {
     const k = this.thetas.length / N_PARAMS
@@ -257,17 +263,20 @@ export class WeekPlanner {
    * 仕事 job・労働時間 h のときの最適な1週間（貯蓄額は今と同じ）。
    * samePayRate=true なら「時給が同じなら」（パートタイムの時給の低下を入れない）
    */
-  plan(job: JobOption, h: number, opts: { monthlySaving?: number; samePayRate?: boolean } = {}): WeekPlan {
+  plan(job: JobOption, h: number, opts: { samePayRate?: boolean; keepSavingRate?: boolean } = {}): WeekPlan {
     const p = this.profile
     const life = this.life
-    const monthlySaving = opts.monthlySaving ?? p.monthlySaving
     const hh = householdAt(p, p.age)
     const commute = h > 0 ? commuteAtHours(job, h) : 0
     const netMonthly = householdNetAnnual(p, grossAtHours(job, h, opts.samePayRate ?? false)) / 12 + hh.allowance
+    const isNow = job.id === currentJob(p).id && Math.abs(h - currentJob(p).weeklyHours) < 1e-9
+    // 働き方を変える仮定では、貯蓄「額」ではなく貯蓄「率」を今と同じにする（収入が減れば貯蓄も減る）
+    const monthlySaving = opts.keepSavingRate && !isNow ? Math.max(0, netMonthly - hh.education / 12) * this.savingRate : p.monthlySaving
     const raw = netMonthly - monthlySaving - hh.education / 12
     const floor = consumptionFloor(p.necessities)
     const drawingDown = raw < floor
-    const consumption = drawingDown ? Math.max(floor, Math.min(p.necessities, p.savings / 12)) : raw
+    // 生活費の下限（貯金の取り崩し）は、今の実際の暮らしにだけ当てはめる
+    const consumption = isNow ? Math.max(floor, raw) : Math.max(5_000, raw)
     // 家事は「外注する前の時間」から始め、時間を買うかどうかも最適化する
     const housework = life.grossHousework
     const free = 168 - h - commute - housework - p.personalCare - hh.childcareMine - p.otherDuties - life.caregiving - life.unlisted
@@ -330,7 +339,7 @@ export class WeekPlanner {
   hoursCurve(job: JobOption, from = 0, to = 70, step = 1): HoursPoint[] {
     const out: HoursPoint[] = []
     for (let h = from; h <= to + 1e-9; h += step) {
-      const pl = this.plan(job, h, { samePayRate: true })
+      const pl = this.plan(job, h, { samePayRate: true, keepSavingRate: true })
       out.push({ hours: h, utility: pl.outcome.utility, netMonthly: pl.netMonthly })
     }
     return out
@@ -339,11 +348,11 @@ export class WeekPlanner {
   /** 各仕事の候補について、労働時間も含めて最適化した結果 */
   compareJobs(): { job: JobOption; fixed: WeekPlan; best: WeekPlan }[] {
     return this.profile.jobs.map((job) => {
-      const fixed = this.plan(job, job.weeklyHours)
+      const fixed = this.plan(job, job.weeklyHours, { keepSavingRate: true })
       let best = fixed
       if (job.hoursFlexible) {
         for (let h = 10; h <= 65; h += 1) {
-          const pl = this.plan(job, h)
+          const pl = this.plan(job, h, { keepSavingRate: true })
           if (pl.outcome.utility > best.outcome.utility) best = pl
         }
       }

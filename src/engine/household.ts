@@ -194,8 +194,9 @@ export function currentLife(p: Profile): CurrentLife {
   const raw = netMonthly - p.monthlySaving - hh.education / 12
   const floor = consumptionFloor(p.necessities)
   const drawingDown = raw < floor
-  // 収入で必需品もまかなえない場合は、貯金を取り崩して必需的支出ぶんは使っているとみなす
-  const consumption = drawingDown ? Math.max(floor, Math.min(p.necessities, p.savings / 12)) : raw
+  // 収入で最低限の生活費もまかなえない場合は、貯金の取り崩しなどでその額は使っているとみなす
+  // （収入に対して単調になるよう、下限は必需的支出の6割で一定にする）
+  const consumption = Math.max(floor, raw)
   const discretionary = Math.max(0, consumption - p.necessities)
   const shareTot = p.spendShare.experience + p.spendShare.goods + p.spendShare.social + p.spendShare.timeBuy
   const f = (k: keyof Spend) => (shareTot > 0 ? (discretionary * p.spendShare[k]) / shareTot : 0)

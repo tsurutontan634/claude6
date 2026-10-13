@@ -66,7 +66,7 @@ export function WeekPage() {
         </div>
         {life.drawingDown && (
           <p className="callout">
-            手取りから貯蓄と教育費を引くと、必需的支出の6割に届きません。貯金を取り崩して必需的支出ぶんは使っている前提で計算しています。年金やその他の収入があれば、プロフィールの「お金」に入れてください。
+            手取りから貯蓄と教育費を引くと、必需的支出の6割に届きません。貯金の取り崩しなどで、その6割ぶんは使っている前提で計算しています。年金やその他の収入があれば、プロフィールの「お金」に入れてください。
           </p>
         )}
         {!opt.feasible && (
@@ -178,7 +178,7 @@ export function WeekPage() {
         <div className="section-head">
           <h2 id="h-title">働く時間を変えられたら？</h2>
           <span className="note">
-            時給は同じ・貯蓄額も同じと仮定。
+            時給は同じ・貯蓄率（手取りのうち貯蓄に回す割合）も同じと仮定。
             {!job.hoursFlexible && `今の仕事は時間を調整できない設定なので、あくまで仮定の話です（実際にパートに移ると時給は約${Math.round(PRIORS.work.partTimeWageRatio * 100)}%になりがちで、人生計画ではそれを反映しています）。`}
           </span>
         </div>
